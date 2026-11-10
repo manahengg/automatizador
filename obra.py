@@ -21,7 +21,7 @@ from .modelo import doc_a_dict, doc_de_dict
 from . import emparejar as M
 from .lectores import bc3, pdf_oferta, pdf_presupuesto
 
-VERSION_CACHE = 6
+VERSION_CACHE = 7
 
 
 def carpeta_datos():
