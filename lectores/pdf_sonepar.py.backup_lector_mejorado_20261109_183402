@@ -1,0 +1,97 @@
+"""Lector OCR para ofertas Sonepar rasterizadas. Requiere Tesseract + pytesseract."""
+import os, re, collections
+import pdfplumber
+from ..modelo import Documento, Capitulo, Partida
+
+def _num(s):
+    s=s.replace('€','').replace(' ','').strip()
+    if not re.fullmatch(r'-?(?:\d+|\d{1,3}(?:\.\d{3})+),\d{2,4}',s): return None
+    return float(s.replace('.','').replace(',','.'))
+
+def reconoce(ruta):
+    """
+    Reconoce documentos Sonepar con texto digital o mediante OCR.
+    Configura expresamente la ruta de Tesseract en Windows.
+    """
+    try:
+        import pdfplumber
+        import pytesseract
+
+        comando = os.environ.get("TESSERACT_CMD")
+        if comando:
+            pytesseract.pytesseract.tesseract_cmd = comando
+
+        with pdfplumber.open(ruta) as pdf:
+            if not pdf.pages:
+                return False
+
+            texto = (pdf.pages[0].extract_text() or "").upper()
+
+            if "SONEPAR" in texto and "PRESUPUESTO" in texto:
+                return True
+
+            imagen = pdf.pages[0].to_image(
+                resolution=250
+            ).original.convert("RGB")
+
+        ocr = pytesseract.image_to_string(
+            imagen,
+            lang="spa+eng",
+            config="--psm 6"
+        ).upper()
+
+        return "SONEPAR" in ocr and "PRESUPUESTO" in ocr
+
+    except Exception as e:
+        print("Error en reconocimiento Sonepar:", str(e))
+        return False
+
+def _lineas_ocr(ruta):
+    try:
+        import pytesseract
+        from pytesseract import Output
+    except ImportError as e:
+        raise RuntimeError('Falta pytesseract. Instálalo y configura Tesseract OCR en Windows.') from e
+    cmd=os.environ.get('TESSERACT_CMD')
+    if cmd: pytesseract.pytesseract.tesseract_cmd=cmd
+    salida=[]
+    with pdfplumber.open(ruta) as pdf:
+        for page in pdf.pages:
+            img=page.to_image(resolution=300).original.convert('RGB')
+            d=pytesseract.image_to_data(img,lang='spa+eng',output_type=Output.DICT,config='--psm 6')
+            grupos=collections.defaultdict(list)
+            for i,t in enumerate(d['text']):
+                t=t.strip()
+                try: conf=float(d['conf'][i])
+                except (ValueError,TypeError): conf=0
+                if t and conf>=25: grupos[round(int(d['top'][i])/12)*12].append((int(d['left'][i]),t))
+            salida += [' '.join(t for x,t in sorted(v)) for _,v in sorted(grupos.items())]
+    return salida
+
+def leer(ruta):
+    lines=_lineas_ocr(ruta); texto='\n'.join(lines)
+    if not any('SONEPAR' in x.upper() for x in lines[:35]):
+        raise ValueError('OCR no identifica Sonepar en la cabecera. Comprueba Tesseract y el idioma español.')
+    doc=Documento(tipo='oferta_proveedor',origen=str(ruta),proveedor='Sonepar',nombre='Oferta Sonepar')
+    m=re.search(r'PRESUPUESTO\s*(?:N[º°.]*)?\s*([A-Z0-9/-]+)',texto,re.I); doc.referencia=m.group(1) if m else None
+    m=re.search(r'\b(\d{2}/\d{2}/\d{4})\b',texto); doc.fecha=m.group(1) if m else None
+    cap=Capitulo(titulo='Oferta Sonepar')
+    for line in lines:
+        if re.search(r'\b(ITEM|ARTICULO|DESCRIPCI[ÓO]N|CANTIDAD|PRECIO|IMPORTE)\b',line,re.I): continue
+        tokens=re.findall(r'(?:\d+|\d{1,3}(?:\.\d{3})+),\d{2,4}',line)
+        vals=[_num(x) for x in tokens]; vals=[x for x in vals if x is not None]
+        if len(vals)<2: continue
+        qty, amount=vals[0], vals[-1]
+        if qty<=0 or amount<0: continue
+        refm=re.search(r'\b[A-Z0-9][A-Z0-9./-]{6,}\b',line,re.I); ref=refm.group(0) if refm else None
+        unit=vals[-2] if len(vals)>=3 else amount/qty
+        desc=line.replace(ref,'',1) if ref else line
+        for token in tokens: desc=desc.replace(token,' ',1)
+        desc=re.sub(r'\s+',' ',desc).strip(' -|') or ('Artículo '+(ref or 'sin referencia'))
+        cap.hijos.append(Partida(descripcion=desc,cantidad=qty,precio=amount/qty,referencia=ref,
+            precio_lista=unit,importe_declarado=amount,
+            notas=['OCR: comprobar manualmente descripción, cantidad y precio contra el PDF.']))
+    if not cap.hijos: raise ValueError('No se reconocieron líneas Sonepar. Revisa el OCR o solicita la oferta en Excel.')
+    doc.capitulos=[cap]
+    doc.avisar('revisar','Oferta Sonepar importada por OCR: verificar todas las líneas en emparejamiento.xlsx antes de generar el BC3.')
+    doc.validar(); return doc
