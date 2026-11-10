@@ -1,102 +1,142 @@
-"""App web LOCAL:  python -m automatizador app
+"""App web LOCAL:  python -m automatizador app      (se abre en http://127.0.0.1:8765)
 
-Se abre en tu navegador (http://127.0.0.1:8765). Subes la licitación y los presupuestos de los proveedores, revisas en
-pantalla lo dudoso y descargas un .zip con los mismos ficheros de siempre (BC3 por proveedor, emparejamiento.xlsx,
-diferencias.xlsx, comparativa.xlsx, LEEME y originales).
+Flujo:
+  1. Crear una obra.
+  2. Subir el presupuesto del cliente (BC3, PDF o Excel).
+  3. Añadir ofertas de proveedores al principio o en cualquier momento (PDF con texto o escaneado, Excel).
+  4. Revisar la comparativa, las alertas y corregir a mano los emparejamientos dudosos (se aprenden para el futuro).
+  5. Descargar el Excel.
+  Pestaña "Base de datos": buscar cualquier material y ver a qué precio lo tiene cada proveedor.
 
-Solo usa la librería estándar de Python. Escucha ÚNICAMENTE en 127.0.0.1: nadie de tu red puede entrar y los ficheros
-no salen de tu ordenador.
+Solo usa la librería estándar de Python. Escucha ÚNICAMENTE en 127.0.0.1: nadie de la red puede entrar y los ficheros no
+salen del ordenador.
 """
 import email
 import email.policy
-import io
 import json
-import mimetypes
 import os
 import re
 import shutil
+import tempfile
 import threading
-import time
 import traceback
-import uuid
 import webbrowser
-import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
-from . import flujo_comparar as flujo
-from .procesar import _nombre_seguro, nombre_corto
-from .app_html import PAGINA_INICIO, PAGINA_TRABAJO
+from . import emparejar as M
+from .app_html import PAGINA
+from .bbdd import BBDD
+from .obra import Obra, ruta_bbdd
+from .exportadores import excel_comparativa
 
 MAX_SUBIDA = 300 * 1024 * 1024
-ID_TRABAJO = re.compile(r'^\d{8}-\d{6}_comparativa$')
-EXTENSIONES = ('.bc3', '.pdf', '.xlsx', '.xlsm')
+BLOQUEO = threading.RLock()        # una operación pesada cada vez (OCR, análisis, escritura)
+_CACHE = {}                         # id obra -> (marca, Resultado)
+_DB = None
 
-BLOQUEO = threading.Lock()          # una tarea pesada cada vez (leer PDFs, emparejar, escribir ficheros)
-TRABAJOS = {}                        # token -> {'estado': 'trabajando'|'listo'|'error', 'msg': str, 'id': str}
+
+def db():
+    global _DB
+    if _DB is None:
+        _DB = BBDD(ruta_bbdd())
+    return _DB
 
 
 def parsear_multipart(content_type, cuerpo):
-    """Separa un formulario multipart/form-data. Devuelve [(campo, nombre_fichero|None, bytes)].
-
-    Usa el módulo 'email' porque 'cgi' ya no existe en las versiones nuevas de Python."""
+    """[(campo, nombre_fichero|None, bytes)] de un formulario multipart (sin el módulo cgi, retirado de Python)."""
     msg = email.message_from_bytes(b'Content-Type: ' + content_type.encode('latin-1') + b'\r\n\r\n' + cuerpo,
                                    policy=email.policy.HTTP)
     if not msg.is_multipart():
         raise ValueError('El formulario no es multipart.')
-    out = []
-    for parte in msg.iter_parts():
-        out.append((parte.get_param('name', header='content-disposition'), parte.get_filename(),
-                    parte.get_payload(decode=True) or b''))
-    return out
+    return [(p.get_param('name', header='content-disposition'), p.get_filename(), p.get_payload(decode=True) or b'')
+            for p in msg.iter_parts()]
 
 
-def _tarea(token, tmp, trabajo):
-    """Ejecuta en segundo plano un trabajo pesado. `trabajo(progreso)` devuelve la carpeta de la comparativa."""
-    estado = TRABAJOS[token]
-    try:
-        with BLOQUEO:
-            carpeta = trabajo(lambda t: estado.update(msg=t))
-        estado.update(estado='listo', id=os.path.basename(carpeta), msg='Listo')
-    except (ValueError, OSError) as e:
-        pista = ''
-        if isinstance(e, OSError) and getattr(e, 'winerror', None) in (3, 206):
-            pista = ('\n\nLa ruta de la carpeta es demasiado larga para Windows. Copia la carpeta del programa a algo corto, '
-                     'por ejemplo C:\\automatizador, y ábrelo desde ahí.')
-        estado.update(estado='error', msg=str(e) + pista)
-    except Exception as e:                                           # fallo inesperado: se cuenta y se deja rastro en consola
-        traceback.print_exc()
-        estado.update(estado='error', msg='Fallo inesperado (%s: %s). Mira la ventana negra del programa para el detalle.' % (
-            type(e).__name__, e))
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+def _marca(o):
+    ficheros = [os.path.join(o.carpeta, 'estado.json')]
+    return tuple(os.path.getmtime(f) for f in ficheros if os.path.exists(f))
 
 
-def hacer_manejador(cfg):
-    base_salida = os.path.realpath(cfg['carpetas']['salida'])
+def analisis(o, forzar=False):
+    with BLOQUEO:
+        m = _marca(o)
+        c = _CACHE.get(o.ident)
+        if c and c[0] == m and not forzar:
+            return c[1]
+        r = o.analizar(db())
+        _CACHE[o.ident] = (m, r)
+        return r
 
-    def carpeta_trabajo(idt):
-        if not ID_TRABAJO.match(idt or ''):
-            return None
-        c = os.path.join(base_salida, idt)
-        return c if os.path.isdir(c) and os.path.exists(os.path.join(c, 'comparativa.xlsx')) else None
 
-    def ficheros(carpeta):
+def _n(x, d=2):
+    return None if x is None else round(x, d)
+
+
+def datos_obra(o):
+    e = o.estado
+    base = {'id': o.ident, 'nombre': o.nombre, 'cliente': e.get('cliente'),
+            'proveedores': [{'nombre': p['nombre'], 'archivo': os.path.basename(p['archivo']), 'anadida': p.get('anadida')}
+                            for p in e['proveedores']]}
+    if not e.get('cliente'):
+        return base
+    r = analisis(o)
+    provs = r.proveedores
+    mats = []
+    for m in r.materiales:
+        fila = {'id': m.id, 'n': m.n, 'codigo': m.codigo, 'cap': m.ruta[-1] if m.ruta else '', 'primero': m.primero,
+                'resumen': (m.partida.resumen or m.partida.descripcion)[:160], 'material': m.descripcion, 'nota': m.nota,
+                'ud': m.unidad, 'cant_partida': m.partida.cantidad, 'cant': _n(m.cantidad, 3), 'precio_cli': m.partida.precio,
+                'alertas_cli': m.alertas_cliente, 'prov': {}}
+        for pv in provs:
+            of = pv['ofertas'].get(m.id)
+            if of:
+                fila['prov'][pv['nombre']] = {
+                    'codigos': of.codigos, 'desc': of.descripcion[:300], 'cant': of.cant_prov, 'precio': _n(of.precio, 4),
+                    'importe': _n(of.importe), 'estado': of.estado, 'punt': _n(of.puntuacion),
+                    'alertas': [{'g': g, 't': t} for g, t in of.alertas],
+                    'dcant': M.comparacion_cantidad(of.cant_prov, m.cantidad)}
+        fila['aprendido'] = r.avisos_aprendidos(m)
+        nom, pr = r.mas_barato(m)
+        fila['mejor'] = {'prov': nom, 'precio': _n(pr, 4), 'importe': _n(pr * m.cantidad if pr else None)}
+        h = r.historico.get(m.id)
+        if h:
+            fila['bbdd'] = {'aviso': h['aviso'], 'ultimos': [
+                {'prov': x['proveedor'], 'precio': _n(x['precio_neto'], 4), 'fecha': x['fecha'], 'obra': x['obra'],
+                 'desc': x['descripcion'][:90], 'motivo': x['motivo']} for x in h['ultimos'][:8]]}
+        mats.append(fila)
+    lineas = {}
+    for pv in provs:
+        por = {a.linea.i: a for a in pv['asign']}
+        manual = {int(k): v for k, v in e['manuales'].get(pv['nombre'], {}).items()}
         out = []
-        for raiz, _, nombres in os.walk(carpeta):
-            for n in sorted(nombres):
-                rel = os.path.relpath(os.path.join(raiz, n), carpeta).replace(os.sep, '/')
-                out.append({'ruta': rel, 'tam': os.path.getsize(os.path.join(raiz, n))})
-        out.sort(key=lambda f: (f['ruta'].count('/'), f['ruta']))
-        return out
+        for l in pv['lineas']:
+            a = por.get(l.i)
+            cands = [{'id': mid, 'p': _n(sc)} for sc, mid in (pv['puntos'].get(l.i) or [])[:5]]
+            out.append({'i': l.i, 'seccion': l.seccion, 'codigo': l.referencia, 'desc': l.partida.descripcion[:200],
+                        'cant': l.partida.cantidad, 'precio': _n(l.partida.precio, 4), 'dto': l.partida.dto_pct,
+                        'importe': _n(l.partida.importe_exacto), 'mat': a.material_id if a else None,
+                        'tipo': a.tipo if a else None, 'punt': _n(a.puntuacion) if a else None,
+                        'manual': l.i in manual, 'cands': cands, 'notas': l.partida.notas})
+        d = pv['doc']
+        suma = round(sum(p.importe_exacto for p in d.partidas() if p.precio is not None), 2)
+        lineas[pv['nombre']] = {'lineas': out, 'fecha': d.fecha, 'validez': d.validez, 'total_doc': d.total_declarado,
+                                'suma': suma, 'avisos': [a.texto for a in d.avisos if a.nivel != 'info'][:12]}
+    total_cli = round(sum(m.partida.importe for m in r.materiales if m.primero), 2)
+    totales = {pv['nombre']: {'importe': round(sum(o.importe or 0 for o in pv['ofertas'].values()), 2),
+                              'cubiertos': len(pv['ofertas']), 'sin': len(pv['sin'])} for pv in provs}
+    base.update(materiales=mats, lineas=lineas, total_cliente=total_cli, totales=totales,
+                cliente_nombre=r.cliente.nombre, avisos_cliente=[a.texto for a in r.cliente.avisos if a.nivel != 'info'])
+    return base
 
+
+def servir(puerto=8765, abrir=True):
     class Manejador(BaseHTTPRequestHandler):
         server_version = 'Automatizador'
 
-        def log_message(self, fmt, *args):                          # sin ruido en la consola
+        def log_message(self, fmt, *args):
             pass
 
-        # ------------------------------------------------------------------ utilidades de respuesta
         def _enviar(self, codigo, cuerpo, tipo, extra=None):
             if isinstance(cuerpo, str):
                 cuerpo = cuerpo.encode('utf-8')
@@ -110,226 +150,156 @@ def hacer_manejador(cfg):
             self.wfile.write(cuerpo)
 
         def _json(self, obj, codigo=200):
-            self._enviar(codigo, json.dumps(obj, ensure_ascii=False), 'application/json; charset=utf-8')
+            self._enviar(codigo, json.dumps(obj, ensure_ascii=False, default=str), 'application/json; charset=utf-8')
 
         def _error(self, codigo, texto):
             self._json({'error': texto}, codigo)
 
-        # ------------------------------------------------------------------ GET
+        def _proteger(self, fn):
+            try:
+                fn()
+            except (ValueError, OSError) as e:
+                self._error(400, str(e))
+            except Exception as e:                         # fallo inesperado: se cuenta y queda rastro en la consola
+                traceback.print_exc()
+                self._error(500, 'Fallo inesperado (%s: %s). Mira la ventana del programa.' % (type(e).__name__, e))
+
+        # ------------------------------------------------------------------------------ GET
         def do_GET(self):
-            ruta = unquote(urlparse(self.path).path)
+            u = urlparse(self.path)
+            ruta = unquote(u.path)
+            q = parse_qs(u.query)
             if ruta == '/':
-                return self._enviar(200, PAGINA_INICIO, 'text/html; charset=utf-8')
-            if ruta == '/trabajos.json':
-                return self._json(self._lista_trabajos())
-            m = re.fullmatch(r'/estado/([0-9a-f]{32})', ruta)
-            if m:
-                e = TRABAJOS.get(m.group(1))
-                return self._json(e) if e else self._error(404, 'Trabajo desconocido.')
-            m = re.fullmatch(r'/trabajo/([^/]+)', ruta)
-            if m:
-                return (self._enviar(200, PAGINA_TRABAJO, 'text/html; charset=utf-8')
-                        if carpeta_trabajo(m.group(1)) else self._error(404, 'No existe ese trabajo.'))
-            m = re.fullmatch(r'/trabajo/([^/]+)/datos\.json', ruta)
-            if m:
-                return self._datos(m.group(1))
-            m = re.fullmatch(r'/trabajo/([^/]+)/descargar\.zip', ruta)
-            if m:
-                return self._zip(m.group(1))
-            m = re.fullmatch(r'/trabajo/([^/]+)/f/(.+)', ruta)
-            if m:
-                return self._fichero(m.group(1), m.group(2))
+                return self._enviar(200, PAGINA, 'text/html; charset=utf-8')
             if ruta == '/favicon.ico':
                 return self._enviar(204, b'', 'image/x-icon')
+            if ruta == '/api/obras':
+                return self._proteger(lambda: self._json([{'id': o.ident, 'nombre': o.nombre,
+                                                           'cliente': bool(o.estado.get('cliente')),
+                                                           'proveedores': [p['nombre'] for p in o.estado['proveedores']]}
+                                                          for o in Obra.listar()]))
+            m = re.fullmatch(r'/api/obra/([^/]+)', ruta)
+            if m:
+                return self._proteger(lambda: self._json(datos_obra(Obra.abrir(m.group(1)))))
+            m = re.fullmatch(r'/api/obra/([^/]+)/excel', ruta)
+            if m:
+                return self._proteger(lambda: self._excel(Obra.abrir(m.group(1))))
+            if ruta == '/api/casos':
+                return self._proteger(lambda: self._json(db().casos()))
+            if ruta == '/api/bbdd':
+                texto = (q.get('q') or [''])[0]
+                return self._proteger(lambda: self._json({'resumen': db().resumen(), 'filas': db().buscar(texto)}))
             self._error(404, 'No encontrado.')
 
-        def _lista_trabajos(self):
-            out = []
-            for d in sorted(os.listdir(base_salida), reverse=True):
-                if carpeta_trabajo(d):
-                    sello = d[:15]
-                    out.append({'id': d, 'fecha': '%s/%s/%s %s:%s' % (sello[6:8], sello[4:6], sello[0:4], sello[9:11], sello[11:13]),
-                                'proveedores': sorted(x for x in os.listdir(os.path.join(base_salida, d))
-                                                      if os.path.exists(os.path.join(base_salida, d, x, 'emparejamiento.json')))})
-            return out[:15]
+        def _excel(self, o):
+            with BLOQUEO:
+                r = analisis(o)
+                fd, tmp = tempfile.mkstemp(suffix='.xlsx')
+                os.close(fd)
+                try:
+                    excel_comparativa.escribir(r, tmp)
+                    with open(tmp, 'rb') as f:
+                        datos = f.read()
+                    shutil.copy2(tmp, os.path.join(o.carpeta, 'comparativa_%s.xlsx' % o.ident))
+                finally:
+                    os.remove(tmp)
+            nombre = 'comparativa_%s.xlsx' % re.sub(r'[^\w.-]+', '_', o.ident)
+            self._enviar(200, datos, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                         {'Content-Disposition': 'attachment; filename="%s"' % nombre})
 
-        def _datos(self, idt):
-            c = carpeta_trabajo(idt)
-            if not c:
-                return self._error(404, 'No existe ese trabajo.')
-            try:
-                with BLOQUEO:
-                    d = flujo.datos_revision(c)
-            except (ValueError, OSError) as e:
-                return self._error(400, str(e))
-            d.update(id=idt, carpeta=c, ficheros=ficheros(c))
-            self._json(d)
-
-        def _zip(self, idt):
-            c = carpeta_trabajo(idt)
-            if not c:
-                return self._error(404, 'No existe ese trabajo.')
-            buf = io.BytesIO()
-            with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
-                for f in ficheros(c):
-                    z.write(os.path.join(c, f['ruta']), '%s/%s' % (idt, f['ruta']))
-            self._enviar(200, buf.getvalue(), 'application/zip',
-                         {'Content-Disposition': 'attachment; filename="%s.zip"' % idt})
-
-        def _fichero(self, idt, rel):
-            c = carpeta_trabajo(idt)
-            if not c:
-                return self._error(404, 'No existe ese trabajo.')
-            real = os.path.realpath(os.path.join(c, rel))
-            if not real.startswith(os.path.realpath(c) + os.sep) or not os.path.isfile(real):     # impide salir de la carpeta (../)
-                return self._error(404, 'No existe ese fichero.')
-            with open(real, 'rb') as f:
-                datos = f.read()
-            tipo = mimetypes.guess_type(real)[0] or 'application/octet-stream'
-            self._enviar(200, datos, tipo, {'Content-Disposition': 'attachment; filename="%s"' % os.path.basename(real).replace('"', '_')})
-
-        # ------------------------------------------------------------------ POST
+        # ------------------------------------------------------------------------------ POST
         def _cuerpo(self):
             n = int(self.headers.get('Content-Length') or 0)
             if n > MAX_SUBIDA:
                 raise ValueError('Subida demasiado grande (máximo %d MB).' % (MAX_SUBIDA // 1048576))
             return self.rfile.read(n)
 
+        def _json_cuerpo(self):
+            return json.loads(self._cuerpo() or b'{}')
+
         def do_POST(self):
             ruta = unquote(urlparse(self.path).path)
-            try:
-                if ruta == '/crear':
-                    return self._crear()
-                m = re.fullmatch(r'/trabajo/([^/]+)/aplicar', ruta)
-                if m:
-                    return self._aplicar(m.group(1))
-                m = re.fullmatch(r'/trabajo/([^/]+)/anadir', ruta)
-                if m:
-                    return self._anadir(m.group(1))
-                m = re.fullmatch(r'/trabajo/([^/]+)/quitar', ruta)
-                if m:
-                    return self._quitar(m.group(1))
-            except ValueError as e:
-                return self._error(400, str(e))
-            except Exception as e:
-                traceback.print_exc()
-                return self._error(500, 'Fallo inesperado: %s: %s' % (type(e).__name__, e))
-            self._error(404, 'No encontrado.')
+            if ruta == '/api/casos/borrar':
+                def borrar():
+                    db().borrar_caso(int(self._json_cuerpo()['id']))
+                    _CACHE.clear()
+                    self._json({'ok': True})
+                return self._proteger(borrar)
+            if ruta == '/api/obras':
+                def crear():
+                    o = Obra.crear(self._json_cuerpo().get('nombre', ''))
+                    self._json({'id': o.ident})
+                return self._proteger(crear)
+            m = re.fullmatch(r'/api/obra/([^/]+)/(cliente|proveedor|quitar|fijar|deshacer|reanalizar|caso)', ruta)
+            if not m:
+                return self._error(404, 'No encontrado.')
+            accion = m.group(2)
 
-        def _guardar_subidas(self, tmp, grupos):
-            """Guarda en `tmp` los ficheros subidos [(carpeta, nombre, bytes)] con nombres cortos y seguros. Devuelve rutas."""
-            usados, rutas = set(), []
-            for prefijo, nombre, datos in grupos:
-                limpio = nombre_corto(_nombre_seguro(os.path.basename(nombre.replace('\\', '/'))) or 'fichero', 40)
-                if not limpio.lower().endswith(EXTENSIONES):
-                    raise ValueError('"%s": formato no admitido (usa %s).' % (nombre, ', '.join(EXTENSIONES)))
-                base, ext = os.path.splitext(limpio)
-                k, cand = 1, limpio
-                while cand.lower() in usados:
-                    k += 1
-                    cand = '%s_%d%s' % (base, k, ext)
-                usados.add(cand.lower())
-                dest = os.path.join(tmp, prefijo, cand)
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
-                with open(dest, 'wb') as f:
-                    f.write(datos)
-                rutas.append(dest)
-            return rutas
+            def hacer():
+                o = Obra.abrir(m.group(1))
+                if accion in ('cliente', 'proveedor'):
+                    partes = parsear_multipart(self.headers.get('Content-Type', ''), self._cuerpo())
+                    campos = {k: v.decode('utf-8', 'replace') for k, f, v in partes if not f}
+                    ficheros = [(f, v) for k, f, v in partes if f and v]
+                    if not ficheros:
+                        raise ValueError('No se ha recibido ningún fichero.')
+                    hechos = []
+                    with BLOQUEO, tempfile.TemporaryDirectory() as tmp:
+                        for nombre_f, datos in ficheros:
+                            nombre_f = os.path.basename(nombre_f.replace('\\', '/'))
+                            ruta_tmp = os.path.join(tmp, nombre_f)
+                            with open(ruta_tmp, 'wb') as fh:
+                                fh.write(datos)
+                            if accion == 'cliente':
+                                d = o.poner_cliente(ruta_tmp, nombre_f)
+                                hechos.append('Presupuesto del cliente: %d partidas, %.2f €' % (
+                                    sum(1 for _ in d.partidas()), d.importe))
+                            else:
+                                nombre_prov = (campos.get('proveedor') or '').strip() if len(ficheros) == 1 else ''
+                                prov, d = o.anadir_proveedor(ruta_tmp, nombre_prov or None, nombre_f)
+                                hechos.append('%s: %d líneas leídas' % (prov, sum(1 for _ in d.partidas())))
+                    return self._json({'ok': True, 'mensaje': ' · '.join(hechos)})
+                datos = self._json_cuerpo()
+                with BLOQUEO:
+                    if accion == 'quitar':
+                        o.quitar_proveedor(datos['proveedor'], db())
+                    elif accion == 'fijar':
+                        o.fijar(datos['proveedor'], int(datos['linea']), datos.get('material') or None)
+                        if datos.get('material'):
+                            r = analisis(o, forzar=True)
+                            pv = next(p for p in r.proveedores if p['nombre'] == datos['proveedor'])
+                            l = next(x for x in pv['lineas'] if x.i == int(datos['linea']))
+                            mat = next(x for x in r.materiales if x.id == datos['material'])
+                            db().aprender(datos['proveedor'], l, mat)
+                    elif accion == 'deshacer':
+                        o.deshacer(datos['proveedor'], int(datos['linea']))
+                    elif accion == 'caso':
+                        r = analisis(o)
+                        mat = next(x for x in r.materiales if x.id == datos['material'])
+                        prov = datos.get('proveedor') or None
+                        oferta = None
+                        if prov:
+                            pv = next((p for p in r.proveedores if p['nombre'] == prov), None)
+                            of = pv and pv['ofertas'].get(mat.id)
+                            oferta = of and ('%s x %s' % (of.cant_prov, of.principal.partida.descripcion))
+                        cant = datos.get('cantidad')
+                        db().anotar_caso(o.nombre, mat, datos['observacion'], prov, oferta,
+                                         float(str(cant).replace(',', '.')) if cant not in (None, '') else None)
+                        _CACHE.clear()
+                    elif accion == 'reanalizar':
+                        analisis(o, forzar=True)
+                self._json({'ok': True})
+            self._proteger(hacer)
 
-        def _lanzar(self, tmp, trabajo, msg):
-            token = uuid.uuid4().hex
-            TRABAJOS[token] = {'estado': 'trabajando', 'msg': msg, 'id': ''}
-            threading.Thread(target=_tarea, args=(token, tmp, trabajo), daemon=True).start()
-            self._json({'token': token})
-
-        def _crear(self):
-            partes = parsear_multipart(self.headers.get('Content-Type', ''), self._cuerpo())
-            lic = [(n, d) for campo, n, d in partes if campo == 'licitacion' and n and d]
-            ofs = [(n, d) for campo, n, d in partes if campo == 'ofertas' and n and d]
-            if len(lic) != 1:
-                raise ValueError('Falta la licitación (un único fichero).')
-            if not ofs:
-                raise ValueError('Añade al menos un presupuesto de proveedor.')
-            tmp = os.path.join(base_salida, '_subidas', uuid.uuid4().hex[:8])
-            os.makedirs(tmp)
-            try:
-                rutas = self._guardar_subidas(tmp, [('licitacion', lic[0][0], lic[0][1])] + [('ofertas', n, d) for n, d in ofs])
-            except ValueError:
-                shutil.rmtree(tmp, ignore_errors=True)
-                raise
-            self._lanzar(tmp, lambda prog: flujo.comparativa(rutas[0], rutas[1:], cfg, progreso=prog, app=True)['carpeta'],
-                         'Leyendo la licitación…')
-
-        def _anadir(self, idt):
-            c = carpeta_trabajo(idt)
-            if not c:
-                return self._error(404, 'No existe ese trabajo.')
-            partes = parsear_multipart(self.headers.get('Content-Type', ''), self._cuerpo())
-            ofs = [(n, d) for campo, n, d in partes if campo == 'ofertas' and n and d]
-            if not ofs:
-                raise ValueError('Elige al menos un presupuesto.')
-            tmp = os.path.join(base_salida, '_subidas', uuid.uuid4().hex[:8])
-            os.makedirs(tmp)
-            try:
-                rutas = self._guardar_subidas(tmp, [('ofertas', n, d) for n, d in ofs])
-            except ValueError:
-                shutil.rmtree(tmp, ignore_errors=True)
-                raise
-            self._lanzar(tmp, lambda prog: flujo.anadir_ofertas(c, rutas, cfg, progreso=prog)['carpeta'], 'Preparando…')
-
-        def _quitar(self, idt):
-            c = carpeta_trabajo(idt)
-            if not c:
-                return self._error(404, 'No existe ese trabajo.')
-            try:
-                sub = json.loads(self._cuerpo().decode('utf-8'))['proveedor']
-                if not re.fullmatch(r'[\w.\-]+', sub):
-                    raise ValueError('Proveedor no válido.')
-            except (KeyError, TypeError, json.JSONDecodeError):
-                raise ValueError('Petición mal formada.')
-            with BLOQUEO:
-                flujo.quitar_oferta(c, sub, cfg)
-            self._json({'ok': True})
-
-        def _aplicar(self, idt):
-            c = carpeta_trabajo(idt)
-            if not c:
-                return self._error(404, 'No existe ese trabajo.')
-            try:
-                cuerpo = json.loads(self._cuerpo().decode('utf-8'))
-                elecciones = {}
-                for prov, el in cuerpo['elecciones'].items():
-                    if not re.fullmatch(r'[\w.\-]+', prov):
-                        raise ValueError('Proveedor no válido.')
-                    elecciones[prov] = {int(o): int(l) for o, l in el.items() if l not in (None, '')}
-            except (KeyError, TypeError, json.JSONDecodeError):
-                raise ValueError('Petición mal formada.')
-            with BLOQUEO:
-                flujo.regenerar(c, elecciones, cfg)
-            self._json({'ok': True})
-
-    return Manejador
-
-
-def servir(cfg, puerto=8765, abrir=True):
-    srv = None
-    for p in range(puerto, puerto + 20):                # si el puerto está ocupado, prueba el siguiente
-        try:
-            srv = ThreadingHTTPServer(('127.0.0.1', p), hacer_manejador(cfg))
-            puerto = p
-            break
-        except OSError:
-            continue
-    if srv is None:
-        raise OSError('No hay ningún puerto libre entre %d y %d.' % (puerto, puerto + 19))
+    srv = ThreadingHTTPServer(('127.0.0.1', puerto), Manejador)
     url = 'http://127.0.0.1:%d/' % puerto
-    print('App en marcha:', url)
-    print('Cierra esta ventana (o pulsa Ctrl+C) para parar el programa.')
+    print('App abierta en %s  (Ctrl+C para cerrar)' % url)
+    print('Datos y base de datos de precios en:', os.path.dirname(ruta_bbdd()))
     if abrir:
-        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
-        print('Parado.')
+        print('Cerrado.')
     finally:
         srv.server_close()

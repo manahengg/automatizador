@@ -1,0 +1,66 @@
+name: Instalador Windows
+
+# Construye ComparadorOfertas.exe (PyInstaller) y el instalador ComparadorOfertas_Setup.exe (Inno Setup)
+# en una máquina Windows de GitHub. Descarga: pestaña Actions -> última ejecución -> Artifacts.
+on:
+  push:
+    branches: ['**']
+    paths-ignore: ['obras/**', '**.md']
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: automatizador          # el paquete se importa como "automatizador"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r automatizador/requirements.txt pyinstaller
+
+      - name: Prueba rápida (lee los ejemplos y genera el Excel)
+        shell: bash
+        env:
+          AUTOMATIZADOR_DATOS: ${{ runner.temp }}/datos_prueba
+        run: |
+          python -m automatizador comparar "automatizador/obras/alburquerque/cliente/DOC20250604121822Pliego de prescripciones tecnicas.PDF.pdf" automatizador/obras/alburquerque/proveedores/electrofil/OFE_160_70922.pdf "automatizador/obras/alburquerque/proveedores/sonepar/SONEPAR  PRTºcentro empleo alburquerque.pdf" --obra prueba -o prueba.xlsx
+
+      - name: Ejecutable (PyInstaller)
+        run: pyinstaller --noconfirm automatizador/windows/comparador.spec
+
+      - name: Prueba del ejecutable
+        shell: pwsh
+        run: |
+          $env:AUTOMATIZADOR_DATOS = "$env:RUNNER_TEMP\datos_exe"
+          $p = Start-Process -FilePath "dist\ComparadorOfertas\ComparadorOfertas.exe" -ArgumentList "--no-abrir" -PassThru
+          Start-Sleep -Seconds 15
+          $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8765/api/obras
+          Write-Host "Respuesta:" $r.StatusCode $r.Content
+          Stop-Process -Id $p.Id -Force
+          if ($r.StatusCode -ne 200) { exit 1 }
+
+      - name: Instalador (Inno Setup)
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+          $v = "1.0.${{ github.run_number }}"
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DVersion=$v" "/DOrigen=$pwd\dist\ComparadorOfertas" "/O$pwd\instalador" automatizador\windows\instalador.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ComparadorOfertas_Setup
+          path: instalador/*.exe
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ComparadorOfertas_portable
+          path: dist/ComparadorOfertas
+          retention-days: 7
