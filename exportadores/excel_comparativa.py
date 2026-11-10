@@ -88,6 +88,7 @@ def escribir(res, ruta):
     # ---------------------------------------------------------------- cabecera
     ws['A1'] = 'Comparativa de ofertas — %s' % res.obra.nombre
     ws['A1'].font = F_TITULO
+    _poner_logo(ws, 'J1')
     caps = res.obra.estado.get('capitulos')
     ws['A2'] = 'Presupuesto del cliente: %s  ·  %d partidas, %d materiales%s  ·  Generado el %s' % (
         res.cliente.nombre or res.obra.estado['cliente']['archivo'], len({m.n for m in res.materiales}),
@@ -323,6 +324,19 @@ def escribir(res, ruta):
     return ruta
 
 
+def _poner_logo(ws, celda, lado=58):
+    """Logo de la empresa en la cabecera de la hoja (si el fichero de logo está disponible)."""
+    import os
+    ruta = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'recursos', 'logo.png')
+    try:
+        from openpyxl.drawing.image import Image as Imagen
+        img = Imagen(ruta)
+        img.width = img.height = lado
+        ws.add_image(img, celda)
+    except Exception:
+        pass
+
+
 def _cab(ws, r, c, texto, relleno):
     cel = ws.cell(r, c, texto)
     cel.font = F_CAB
@@ -349,6 +363,7 @@ def _hoja_resumen(wb, res, grupos, c_ini, c_fin, f_ini, f_fin, c_capfila):
     provs = res.proveedores
     ws['A1'] = 'Resumen por capítulo — %s' % res.obra.nombre
     ws['A1'].font = F_TITULO
+    _poner_logo(ws, 'H1')
     ws['A2'] = ('Importes calculados con las cantidades de material del cliente. "Dif." = importe cliente − importe '
                 'proveedor en las partidas que ese proveedor oferta. "Partidas ofertadas" cuenta los materiales con precio.')
     ws['A2'].font = F_GRIS

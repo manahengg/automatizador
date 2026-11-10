@@ -48,7 +48,7 @@ FAMILIAS = [
     ('pantalla_estanca', r'estanca|damp proof|wt007|pantalla led|lestc'),
     ('rail', r'\brail\b|carril|\btrack\b|acoplamiento|alimentacion trifasica t\.?t|conexion angular|tubo estructural'),
     ('proyector', r'proyector|parscan|lightscan|spot\b|rejilla de panal|pieza especial de conexion'),
-    ('luminaria', r'luminaria|lumin\.|luminar\b|lampara|lineal|panel led|\bled\b.*\d+ ?lm|lima\b|ledlima'),
+    ('luminaria', r'luminaria|lumin\.|luminar\b|lampara|fine led|tira (de )?led|led strip|strip led|lineal|panel led|\bled\b.*\d+ ?lm|lima\b|ledlima'),
     ('control_iluminacion', r'pastilla rele|botonera|casambi|pantalla tactil|pasarela|bluetooth.*escenas|sistema de control|sist\.? control'),
     ('interruptor', r'interruptor|conmutador|pulsador'),
     ('base_enchufe', r'base (de )?ench|schuko|schuco|toma de corriente|\btc\b'),
@@ -251,7 +251,7 @@ def atributos(texto, titulo=''):
     if k:
         v = k[0] if isinstance(k[0], str) else next(x for x in k[0] if x)
         a['temp_color'] = int(v) if len(v) == 4 else int(v) * 100
-    ip = re.findall(r'\bip[- ]?(\d{2,3})\b', n)
+    ip = re.findall(r'\bip[- ]?(\d{2,3})\b', n) or re.findall(r'\bip([0-6]\d)(?=\d)', n)   # 'ip6524v' (pegado por OCR)
     if ip:
         a['ip'] = ip
     ma = re.findall(r'(\d{2,3})\s*ma\b', n)

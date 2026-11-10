@@ -72,6 +72,11 @@ class Linea:
         return self.partida.referencia or ''
 
     @property
+    def es_accesorio(self):
+        """Accesorio que se vende aparte de su artículo (tapa, perfil, difusor, driver, junta, alimentación...)."""
+        return es_accesorio_texto(self.partida.descripcion)
+
+    @property
     def es_canon(self):
         return self.partida.canon_de is not None or self.atributos.get('familia') == 'canon'
 
@@ -88,6 +93,27 @@ class Asignacion:
 SINONIMOS = {'tapa': 'cubierta', 'conmutado': 'conmutador', 'schuco': 'schuko', 'corrug': 'corrugado',
              'downl': 'downlight', 'fotov': 'fotovoltaico', 'fotovoltaicos': 'fotovoltaico', 'paneles': 'modulo',
              'interr': 'interruptor', 'emergencias': 'emergencia'}
+
+
+RE_ACCESORIO = re.compile(r'(^|[^a-z])(acc\.?|accesorio|lampacc|perfil|difusor|driver|drv\d|drv\b|tapa final|end cover|joint|'
+                          r'union|kit (de )?(montaje|suspension)|soporte|alimentacion (dcha|izq|derecha|izquierda)|'
+                          r'cable de suspension|steel cable|embellecedor|marco de empotrar|rejilla)')
+
+
+def _pegado(texto):
+    """Texto sin espacios ni signos, para buscar nombres de modelo dentro de palabras pegadas por el OCR."""
+    return re.sub(r'[^a-z0-9]', '', E.norm(texto))
+
+
+def _es_pegada(palabra):
+    """Palabra con varias palabras pegadas por el OCR ('lum.techoplatg3600x6003200830prism'), no un código de artículo
+    ('lampf2sf500lo208300'): larga y con al menos dos tramos de 4+ letras."""
+    return len(palabra) >= 14 and len(re.findall(r'[a-z]{4,}', palabra)) >= 2
+
+
+def es_accesorio_texto(texto):
+    """Se mira el principio de la descripción ('FIL45 ACC. ...', 'PERFIL ...'), donde se dice qué es el artículo."""
+    return bool(RE_ACCESORIO.search(E.norm(texto)[:25]))
 
 
 def _tokens(texto):
@@ -172,9 +198,11 @@ def lineas_oferta(doc, proveedor):
     out = []
     for cap in doc.capitulos:
         for p in cap.partidas():
-            out.append(Linea(proveedor=proveedor, i=len(out), partida=p, seccion=cap.titulo,
-                             atributos=E.atributos(p.descripcion), tokens=_tokens(p.descripcion),
-                             plantas=_plantas(cap.titulo)))
+            l = Linea(proveedor=proveedor, i=len(out), partida=p, seccion=cap.titulo,
+                      atributos=E.atributos(p.descripcion), tokens=_tokens(p.descripcion), plantas=_plantas(cap.titulo))
+            # texto pegado por el OCR ('LUM.TECHOPLATG3600X6003200830PRISM'): se guarda para buscar dentro
+            l.pegado = _pegado(p.descripcion) if any(_es_pegada(t) for t in E.norm(p.descripcion).split()) else ''
+            out.append(l)
     return out
 
 
@@ -210,7 +238,7 @@ def puntuar(l, m, conocidas=None):
     al, am = l.atributos, m.atributos
     for clave, peso, castigo in (('seccion', 0.3, 0.5), ('diametro', 0.25, 0.15), ('tipo_cable', 0.08, 0.06),
                                  ('optica', 0.2, 0.45), ('longitud_mm', 0.15, 0.4), ('posicion', 0.12, 0.3),
-                                 ('temp_color', 0.05, 0.1), ('material', 0.05, 0.3)):
+                                 ('temp_color', 0.05, 0.1), ('material', 0.05, 0.3), ('ip', 0.1, 0.1)):
         x, y = al.get(clave), am.get(clave)
         if x is not None and y is not None:
             s += peso if x == y else -castigo
@@ -223,6 +251,11 @@ def puntuar(l, m, conocidas=None):
         s += 0.05 if tt & am['tipo_tubo'] else -0.03
     if l.tokens and m.tokens:
         comun = l.tokens & m.tokens
+        if getattr(l, 'pegado', ''):
+            # palabras del presupuesto que aparecen DENTRO del texto pegado de la línea
+            extra = {t for t in m.tokens - comun if len(t) >= 4 and not t.isdigit() and _IDF.get(t, 0) > 1.5
+                     and t in l.pegado}
+            comun = comun | extra
         if _IDF:
             # palabras raras en el presupuesto (nombres de modelo: KOMBIC, FIL45...) pesan mucho más que las comunes
             peso_l = sum(_IDF.get(t, _IDF_MAX) for t in l.tokens) or 1.0
@@ -287,7 +320,8 @@ def emparejar(materiales, lineas, manuales=None, conocidas=None):
         fila.sort(reverse=True)
         puntos[l.i] = fila[:8]
     # 1) principales: mejor pareja global
-    cand = sorted(((sc, l.i, mid) for l in normales for sc, mid in puntos[l.i] if sc >= UMBRAL_PRINCIPAL), reverse=True)
+    cand = sorted(((sc, l.i, mid) for l in normales for sc, mid in puntos[l.i]
+                   if sc >= UMBRAL_PRINCIPAL and _puede_ser_principal(l, por_id[mid], sc)), reverse=True)
     por_i = {l.i: l for l in lineas}
     hecho = set()
     for sc, li, mid in cand:
@@ -306,7 +340,10 @@ def emparejar(materiales, lineas, manuales=None, conocidas=None):
                 mejor_linea[mid] = (sc, l.i)
     for mid, (sc, li) in mejor_linea.items():
         l = por_i[li]
-        if sc >= 0.28 and l.atributos.get('familia') and l.atributos.get('familia') == por_id[mid].atributos.get('familia') \
+        mm_ = por_id[mid]
+        misma_fam = l.atributos.get('familia') and l.atributos.get('familia') == mm_.atributos.get('familia')
+        misma_cant = bool(l.partida.cantidad and mm_.cantidad) and abs(l.partida.cantidad / mm_.cantidad - 1) < 0.005
+        if sc >= (0.28 if misma_fam else 0.18) and not l.es_accesorio and (misma_fam or misma_cant) \
                 and li not in hecho and mid not in cubiertos:
             asign.append(Asignacion(mid, l, 'principal', sc))
             hecho.add(li)
@@ -318,6 +355,8 @@ def emparejar(materiales, lineas, manuales=None, conocidas=None):
     resto = [l for l in normales if l.i not in hecho]
     mat_por_linea = {a.linea.i: a.material_id for a in asign}
     for l in resto:
+        if l.es_accesorio and not (puntos[l.i] and puntos[l.i][0][0] >= 0.6):
+            continue                                    # los accesorios se colocan en el paso 2b
         mejor = next(((sc, mid) for sc, mid in puntos[l.i] if mid in cubiertos), None)
         prev = next((mat_por_linea[j] for j in range(l.i - 1, max(-1, l.i - 6), -1) if j in mat_por_linea), None)
         sig = next((mat_por_linea[j] for j in range(l.i + 1, l.i + 6) if j in mat_por_linea), None)
@@ -353,6 +392,29 @@ def emparejar(materiales, lineas, manuales=None, conocidas=None):
             asign.append(Asignacion(elegido[1], l, 'complemento', elegido[0]))
             mat_por_linea[l.i] = elegido[1]
             hecho.add(l.i)
+    # 2b) accesorios sueltos: van con el artículo cercano (hasta 8 líneas antes) con el que comparten nombre de modelo
+    #     (FIL45, FINE LED, STORMBELL...); si no comparten nada, con el inmediatamente anterior
+    for l in normales:
+        if l.i in hecho or not l.es_accesorio:
+            continue
+        mejor_acc, mejor_peso = None, 0.0
+        for j in range(l.i - 1, max(-1, l.i - 9), -1):
+            if j not in mat_por_linea:
+                continue
+            otra = por_i[j]
+            raras = {t for t in (l.tokens & otra.tokens) if _IDF.get(t, _IDF_MAX) > 1.5 and not t.isdigit()}
+            peso = sum(_IDF.get(t, _IDF_MAX) for t in raras)
+            if getattr(l, 'pegado', ''):
+                peso += sum(_IDF.get(t, 0) for t in otra.tokens if len(t) >= 4 and t in l.pegado and not t.isdigit())
+            peso *= max(0.3, 1 - 0.1 * (l.i - j - 1))        # a igualdad, el artículo más cercano en la oferta
+            if peso > mejor_peso:
+                mejor_acc, mejor_peso = mat_por_linea[j], peso
+        if mejor_acc is None and l.i - 1 in mat_por_linea:
+            mejor_acc = mat_por_linea[l.i - 1]
+        if mejor_acc and not _choca(por_id[mejor_acc], l, ignorar_familia=True):
+            asign.append(Asignacion(mejor_acc, l, 'complemento', puntuar(l, por_id[mejor_acc], conocidas)))
+            mat_por_linea[l.i] = mejor_acc
+            hecho.add(l.i)
     # 3) cánones con su línea
     for l in lineas:
         if l.i in usadas or not l.es_canon:
@@ -372,9 +434,16 @@ def _parecida(a, b):
     return bool(a and b) and 0.8 <= a / b <= 1.25
 
 
-def _choca(m, l):
-    """True si la línea contradice claramente al material (no puede ser un accesorio suyo)."""
-    return any(g == 'alta' for g, _ in E.comparar(m.atributos, l.atributos))
+def _puede_ser_principal(l, m, sc=0.0):
+    """Un accesorio (tapa, perfil, driver...) solo es la línea principal de una partida que también es un accesorio, o
+    cuando casa claramente con ella (p. ej. una partida 'Alimentación trifásica derecha' del propio presupuesto)."""
+    return not l.es_accesorio or sc >= 0.6 or es_accesorio_texto((m.partida.resumen or '') + ' ' + m.descripcion)
+
+
+def _choca(m, l, ignorar_familia=False):
+    """True si la línea contradice claramente al material (no puede ser un accesorio suyo).
+    ignorar_familia: para accesorios (el cable de suspensión de una luminaria es un cable, pero va con ella)."""
+    return any(g == 'alta' and not (ignorar_familia and 'otro tipo' in t) for g, t in E.comparar(m.atributos, l.atributos))
 
 
 def _mejorar(asign, materiales, lineas, normales, puntos, por_id, hecho, cubiertos, conocidas, vueltas=3):
@@ -389,7 +458,8 @@ def _mejorar(asign, materiales, lineas, normales, puntos, por_id, hecho, cubiert
     def bono(li, n, m_actual):
         return BONO if any(m_actual.get(j) == n for j in range(li - 6, li + 7) if j != li) else 0.0
 
-    candidatos = {l.i: [(sc, mid) for sc, mid in puntos[l.i] if sc >= 0.2] for l in normales}
+    candidatos = {l.i: [(sc, mid) for sc, mid in puntos[l.i] if sc >= 0.2 and _puede_ser_principal(l, por_id[mid], sc)]
+                  for l in normales}
     for _ in range(vueltas):
         cambio = False
         mm = mapa()
