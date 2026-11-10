@@ -24,6 +24,8 @@ def main(argv=None):
     p.add_argument('rutas', nargs='*')
     p.add_argument('--obra', help='nombre de la obra (por defecto, el nombre del fichero del cliente)')
     p.add_argument('-o', '--salida', help='ruta del Excel a generar')
+    p.add_argument('--capitulos', help='capítulos que hacemos, separados por comas (código o inicio del código, p. ej. '
+                                       '"14.01,14.03"). Sin indicar: todos')
     p.add_argument('--puerto', type=int, default=8765)
     p.add_argument('--no-abrir', action='store_true', help='con la orden app: no abrir el navegador')
     a = p.parse_args(argv)
@@ -52,7 +54,22 @@ def main(argv=None):
     cliente, ofertas = a.rutas[0], a.rutas[1:]
     try:
         o = Obra.crear(a.obra or os.path.splitext(os.path.basename(cliente))[0])
-        o.poner_cliente(cliente, progreso=print)
+        doc_cli = o.poner_cliente(cliente, progreso=lambda t, f=None: None)
+        if a.capitulos:
+            from . import emparejar as M
+            pedidos = [x.strip().rstrip('#') for x in a.capitulos.split(',') if x.strip()]
+            claves = []
+
+            def recorrer(nodos, dentro=False):
+                for nd in nodos:
+                    ok = dentro or any(nd['codigo'] == c or nd['codigo'].startswith(c + '.') or nd['titulo'].upper() == c.upper()
+                                       for c in pedidos)
+                    if ok:
+                        claves.append(nd['clave'])
+                    recorrer(nd['hijos'], ok)
+            recorrer(M.arbol_capitulos(doc_cli))
+            o.elegir_capitulos(claves)
+            print('Capítulos incluidos:', len(claves))
         for f in ofertas:
             prov, d = o.anadir_proveedor(f, progreso=print)
             print('Oferta de %s: %d líneas' % (prov, sum(1 for _ in d.partidas())))

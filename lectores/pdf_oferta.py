@@ -33,7 +33,7 @@ COLUMNAS = {
 }
 NUMERICAS = ('cantidad', 'precio', 'dto', 'importe')
 FIN_TABLA = re.compile(r'^(P[aá]gina\s+\d+\s*/\s*\d+|P[aá]g\.?:?\s*\d|Suma y sigue|SUBTOTAL\b|Importes\b|TOTAL VENTA|'
-                       r'Vendedor\s*:|Fecha Validez|Base imponible|TOTAL BRUTO|TOTAL NETO|Precios:)', re.I)
+                       r'Vendedor\s*:|Fecha Validez|Base imponible|TOTAL BRUTO|TOTAL NETO|Precios:|IMP\.?\s*BRUTO)', re.I)
 PROVEEDORES_CONOCIDOS = ('ELECTROMERCANTIL', 'ELECTROFIL', 'SONEPAR', 'REXEL', 'SALTOKI', 'FEGIME', 'GRUPO ELEKTRA',
                          'ELECTRO STOCKS', 'DIELECTRO', 'COMERCIAL ELECTRICA', 'ELECTRICIDAD MARTOS', 'YESTE')
 MARCAS = ('ERCO', 'PHILIPS', 'SCHNEIDER', 'SIMON', 'LEGRAND', 'ABB', 'HAGER', 'IGUZZINI', 'TROX', 'LAMP', 'ORBIS')
@@ -347,7 +347,7 @@ def _datos_generales(doc, texto):
     doc.referencia = _buscar(texto, r'N[ºo°] ?PRESUP:?\s*(\S+)')
     num = r'((?:\d{1,3}(?:\.\d{3})+|\d+),\d{2})'
     for pat in (r'SUBTOTAL EURO:?\s*' + num, r'TOTAL VENTA[^\d]*' + num, r'Total Neto[^\d]*' + num,
-                r'Base imponible[^\d]*' + num, r'IMP\.?\s*BRUTO:?\s*' + num, r'NETOS[^\n]*?' + num + r'\s*€'):
+                r'Base imponible[^\d]*' + num, r'IMP\.?\s*BRUTO\s*:?\s*(?:EUR\s*)?' + num, r'IMP\.?\s*BRUTO[^\n]*?' + num, r'NETOS[^\n]*?' + num + r'\s*€'):
         v = _buscar(texto, pat)
         if v:
             doc.total_declarado = P.numero(v)

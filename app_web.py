@@ -30,7 +30,7 @@ from . import compartido as C
 from . import emparejar as M
 from .app_html import PAGINA
 from .bbdd import BBDD
-from .obra import Obra, ruta_bbdd
+from .obra import Obra, clave_mat, leer_cliente, ruta_bbdd
 from .exportadores import excel_comparativa
 
 MAX_SUBIDA = 300 * 1024 * 1024
@@ -106,8 +106,13 @@ def datos_obra(o):
     e = o.estado
     base = {'id': o.ident, 'nombre': o.nombre, 'cliente': e.get('cliente'), 'version': VERSION['n'],
             'proveedores': [{'nombre': p['nombre'], 'archivo': os.path.basename(p['archivo']), 'anadida': p.get('anadida'),
-                             'usuario': p.get('usuario')} for p in e['proveedores']],
-            'historial': e['historial'][-40:][::-1]}
+                             'usuario': p.get('usuario'), 'n_ofertas': len(p['ofertas'])} for p in e['proveedores']],
+            'cliente_archivos': [{'archivo': os.path.basename(a['archivo']), 'huella': a['huella']}
+                                 for a in (e.get('cliente') or {}).get('archivos', [])],
+            'historial': e['historial'][-40:][::-1], 'capitulos': e.get('capitulos')}
+    if o.pendiente_capitulos:
+        base['pendiente_capitulos'] = True          # primero hay que elegir qué capítulos hacemos
+        return base
     if not e.get('cliente'):
         return base
     r = analisis(o)
@@ -138,20 +143,25 @@ def datos_obra(o):
     lineas = {}
     for pv in provs:
         por = {a.linea.i: a for a in pv['asign']}
-        manual = {int(k): v for k, v in e['manuales'].get(pv['nombre'], {}).items()}
+        manual = {k for k in e['manuales'].get(pv['nombre'], {})}
         out = []
         for l in pv['lineas']:
             a = por.get(l.i)
             cands = [{'id': mid, 'p': _n(sc)} for sc, mid in (pv['puntos'].get(l.i) or [])[:5]]
-            out.append({'i': l.i, 'seccion': l.seccion, 'codigo': l.referencia, 'desc': l.partida.descripcion[:200],
+            out.append({'i': l.i, 'uid': l.uid, 'seccion': l.seccion, 'codigo': l.referencia, 'desc': l.partida.descripcion[:200],
                         'cant': l.partida.cantidad, 'precio': _n(l.partida.precio, 4), 'dto': l.partida.dto_pct,
                         'importe': _n(l.partida.importe_exacto), 'mat': a.material_id if a else None,
                         'tipo': a.tipo if a else None, 'punt': _n(a.puntuacion) if a else None,
-                        'manual': l.i in manual, 'cands': cands, 'notas': l.partida.notas})
-        d = pv['doc']
-        suma = round(sum(p.importe_exacto for p in d.partidas() if p.precio is not None), 2)
-        lineas[pv['nombre']] = {'lineas': out, 'fecha': d.fecha, 'validez': d.validez, 'total_doc': d.total_declarado,
-                                'suma': suma, 'avisos': [a.texto for a in d.avisos if a.nivel != 'info'][:12]}
+                        'manual': l.uid in manual or str(l.i) in manual, 'cands': cands, 'notas': l.partida.notas})
+        docs = []
+        for x in pv['docs']:
+            d = x['doc']
+            docs.append({'archivo': os.path.basename(x['archivo']), 'huella': x['huella'], 'fecha': d.fecha,
+                         'validez': d.validez, 'total_doc': d.total_declarado, 'usuario': x.get('usuario'),
+                         'anadida': x.get('anadida'), 'lineas': sum(1 for _ in d.partidas()),
+                         'suma': round(sum(p.importe_exacto for p in d.partidas() if p.precio is not None), 2),
+                         'avisos': [a.texto for a in d.avisos if a.nivel != 'info'][:12]})
+        lineas[pv['nombre']] = {'lineas': out, 'docs': docs}
     total_cli = round(sum(m.partida.importe for m in r.materiales if m.primero), 2)
     totales = {pv['nombre']: {'importe': round(sum(o.importe or 0 for o in pv['ofertas'].values()), 2),
                               'cubiertos': len(pv['ofertas']), 'sin': len(pv['sin'])} for pv in provs}
@@ -207,20 +217,30 @@ def procesar_subida(trabajo, o, accion, ficheros, campos, carpeta_tmp):
     n = len(ficheros)
     try:
         with BLOQUEO:
-            for k, (nombre_f, ruta_tmp) in enumerate(ficheros):
-                pre = '%s · ' % nombre_f if n > 1 else ''
-                cb = trabajo.tramo(0.85 * k / n, 0.85 * (k + 1) / n, pre)
-                cb('Abriendo el documento…', 0)
-                if accion == 'cliente':
-                    d = o.poner_cliente(ruta_tmp, nombre_f, progreso=cb)
-                    hechos.append('Presupuesto del cliente: %d partidas, %s €' % (
-                        sum(1 for _ in d.partidas()), ('%.2f' % d.importe).replace('.', ',')))
-                else:
-                    nombre_prov = (campos.get('proveedor') or '').strip() if n == 1 else ''
-                    prov, d = o.anadir_proveedor(ruta_tmp, nombre_prov or None, nombre_f, progreso=cb)
-                    hechos.append('%s: %d líneas leídas' % (prov, sum(1 for _ in d.partidas())))
+            if accion == 'cliente':
+                # el proyecto del cliente puede venir en varios ficheros: se leen todos y se unen
+                cb = trabajo.tramo(0, 0.85)
+                for k, (nombre_f, ruta_tmp) in enumerate(ficheros):
+                    cbk = trabajo.tramo(0.85 * k / n, 0.85 * (k + 1) / n, '%s · ' % nombre_f if n > 1 else '')
+                    cbk('Abriendo el documento…', 0)
+                    o._leer(ruta_tmp, leer_cliente, cbk)                         # lee (y deja en caché) cada fichero
+                d = o.poner_cliente(ficheros[0][1], ficheros[0][0], progreso=None, anadir=campos.get('modo') == 'anadir',
+                                    mas=[(r, nf) for nf, r in ficheros[1:]])
+                hechos.append('Presupuesto del cliente%s: %d partidas, %s €. Elige ahora los capítulos que hacemos' % (
+                    ' (%d ficheros)' % len(o.estado['cliente']['archivos']) if len(o.estado['cliente']['archivos']) > 1 else '',
+                    sum(1 for _ in d.partidas()), ('%.2f' % d.importe).replace('.', ',')))
                 cb('Leído: ' + hechos[-1], 1.0)
-            if o.estado.get('cliente'):
+            else:
+                nombre_prov = (campos.get('proveedor') or '').strip()
+                sustituir = campos.get('sustituir') == '1'
+                for k, (nombre_f, ruta_tmp) in enumerate(ficheros):
+                    cb = trabajo.tramo(0.85 * k / n, 0.85 * (k + 1) / n, '%s · ' % nombre_f if n > 1 else '')
+                    cb('Abriendo el documento…', 0)
+                    prov, d = o.anadir_proveedor(ruta_tmp, nombre_prov or None, nombre_f, progreso=cb,
+                                                 sustituir=sustituir and k == 0)
+                    hechos.append('%s: %d líneas leídas (%s)' % (prov, sum(1 for _ in d.partidas()), nombre_f))
+                    cb('Leído: ' + hechos[-1], 1.0)
+            if o.estado.get('cliente') and not o.pendiente_capitulos:
                 cb = trabajo.tramo(0.85, 1.0)
                 cb('Casando ofertas con el presupuesto y consultando la base de datos de precios…', 0.1)
                 analisis(o, progreso=lambda t, f=None: cb(t, 0.5))
@@ -271,7 +291,7 @@ class Sincronizador(threading.Thread):
             if anterior == m:
                 continue
             self.marcas[o.ident] = m
-            if not o.estado.get('cliente'):
+            if not o.estado.get('cliente') or o.pendiente_capitulos:
                 if anterior is not None:
                     _avisar_cambio(o.ident, 'Cambios en %s' % o.nombre)
                 continue
@@ -338,6 +358,30 @@ def servir(puerto=8765, abrir=True):
             m = re.fullmatch(r'/api/obra/([^/]+)', ruta)
             if m:
                 return self._proteger(lambda: self._json(datos_obra(Obra.abrir(m.group(1)))))
+            m = re.fullmatch(r'/api/obra/([^/]+)/capitulos', ruta)
+            if m:
+                def caps():
+                    o = Obra.abrir(m.group(1))
+                    if not o.estado.get('cliente'):
+                        raise ValueError('Primero sube el presupuesto del cliente.')
+                    with BLOQUEO:
+                        doc = o.documento_cliente()
+                    arbol = M.arbol_capitulos(doc)
+                    incl = o.estado.get('capitulos')
+                    if incl is None and o.estado.get('capitulos_previos') is not None:
+                        # al añadir ficheros al proyecto: lo elegido antes + los capítulos nuevos marcados
+                        conocidos = set(o.estado.get('capitulos_conocidos') or [])
+                        nuevos = []
+
+                        def rec(ns):
+                            for n in ns:
+                                if n['clave'] not in conocidos:
+                                    nuevos.append(n['clave'])
+                                rec(n['hijos'])
+                        rec(arbol)
+                        incl = list(o.estado['capitulos_previos']) + nuevos
+                    self._json({'arbol': arbol, 'incluidos': incl, 'total': round(doc.importe, 2)})
+                return self._proteger(caps)
             m = re.fullmatch(r'/api/obra/([^/]+)/excel', ruta)
             if m:
                 return self._proteger(lambda: self._excel(Obra.abrir(m.group(1))))
@@ -424,7 +468,7 @@ def servir(puerto=8765, abrir=True):
                     o = Obra.crear(self._json_cuerpo().get('nombre', ''))
                     self._json({'id': o.ident})
                 return self._proteger(crear)
-            m = re.fullmatch(r'/api/obra/([^/]+)/(cliente|proveedor|quitar|fijar|deshacer|reanalizar|caso)', ruta)
+            m = re.fullmatch(r'/api/obra/([^/]+)/(cliente|proveedor|quitar|quitar_oferta|quitar_cliente|fijar|deshacer|reanalizar|caso|capitulos)', ruta)
             if not m:
                 return self._error(404, 'No encontrado.')
             accion = m.group(2)
@@ -454,15 +498,30 @@ def servir(puerto=8765, abrir=True):
                     if accion == 'quitar':
                         o.quitar_proveedor(datos['proveedor'], db())
                     elif accion == 'fijar':
-                        o.fijar(datos['proveedor'], int(datos['linea']), datos.get('material') or None)
-                        if datos.get('material'):
-                            r = analisis(o, forzar=True)
+                        r = analisis(o)
+                        mat = next((x for x in r.materiales if x.id == datos.get('material')), None)
+                        o.fijar(datos['proveedor'], datos['linea'], datos.get('material') or None,
+                                clave_mat(mat) if mat else None)
+                        if mat:
                             pv = next(p for p in r.proveedores if p['nombre'] == datos['proveedor'])
-                            l = next(x for x in pv['lineas'] if x.i == int(datos['linea']))
-                            mat = next(x for x in r.materiales if x.id == datos['material'])
+                            l = next(x for x in pv['lineas'] if x.uid == str(datos['linea']))
                             db().aprender(datos['proveedor'], l, mat)
                     elif accion == 'deshacer':
-                        o.deshacer(datos['proveedor'], int(datos['linea']))
+                        o.deshacer(datos['proveedor'], datos['linea'])
+                    elif accion == 'quitar_oferta':
+                        o.quitar_oferta(datos['huella'])
+                    elif accion == 'quitar_cliente':
+                        o.quitar_cliente(datos['huella'])
+                    elif accion == 'capitulos':
+                        todos = []
+
+                        def rec(ns):
+                            for n in ns:
+                                todos.append(n['clave'])
+                                rec(n['hijos'])
+                        rec(M.arbol_capitulos(o.documento_cliente()))
+                        o.elegir_capitulos(datos.get('incluidos') or [], todos)
+                        analisis(o, forzar=True)
                     elif accion == 'caso':
                         r = analisis(o)
                         mat = next(x for x in r.materiales if x.id == datos['material'])

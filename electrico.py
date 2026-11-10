@@ -46,9 +46,9 @@ FAMILIAS = [
     ('emergencia', r'emergencia|blq\.? ?auto'),
     ('downlight', r'downlight|downl\b|downl\.'),
     ('pantalla_estanca', r'estanca|damp proof|wt007|pantalla led|lestc'),
-    ('rail', r'\brail\b|carril|acoplamiento|alimentacion trifasica t\.?t|conexion angular|tubo estructural'),
+    ('rail', r'\brail\b|carril|\btrack\b|acoplamiento|alimentacion trifasica t\.?t|conexion angular|tubo estructural'),
     ('proyector', r'proyector|parscan|lightscan|spot\b|rejilla de panal|pieza especial de conexion'),
-    ('luminaria', r'luminaria|lampara|lineal|panel led|\bled\b.*\d+ ?lm|lima\b|ledlima'),
+    ('luminaria', r'luminaria|lumin\.|luminar\b|lampara|lineal|panel led|\bled\b.*\d+ ?lm|lima\b|ledlima'),
     ('control_iluminacion', r'pastilla rele|botonera|casambi|pantalla tactil|pasarela|bluetooth.*escenas|sistema de control|sist\.? control'),
     ('interruptor', r'interruptor|conmutador|pulsador'),
     ('base_enchufe', r'base (de )?ench|schuko|schuco|toma de corriente|\btc\b'),
@@ -92,7 +92,10 @@ def familia(texto, titulo=''):
             if re.search(pat, n):
                 return fam
     # texto de OCR con palabras pegadas ('TUBOENCHUFABLEMETRICO16'): se busca sin espacios ni límites de palabra
-    pegado = norm(titulo + ' ' + texto).replace(' ', '')
+    todo = norm(titulo + ' ' + texto)
+    if not any(len(w) >= 14 and re.search(r'[a-z]{4}', w) for w in todo.split()):
+        return None                         # el texto no tiene palabras pegadas: no se busca dentro de las palabras
+    pegado = todo.replace(' ', '')
     for fam, pat in FAMILIAS:
         if fam in ('canon', 'servicio', 'caja', 'marco'):
             continue
@@ -145,6 +148,45 @@ def formacion_cable(n):
     return out
 
 
+MARCAS_LIBRES = ('afumex', 'exzhellent', 'alsecure', 'sumsave', 'afirenas', 'toxfree', 'tox free', 'harmohny',
+                 'ecoclass', 'eurocable z1', 'hersatene', 'superflex z1', 'erivolt')
+MARCAS_CON = ('retenax', 'wirepol', 'tuperplas')
+
+
+def halogenos(texto, at=None):
+    """¿Lleva halógenos? -> ('libre' | 'contiene' | None, motivo).
+
+    Se deduce, por este orden: texto explícito, designación normalizada del cable (Z1 = poliolefina libre de halógenos;
+    V = PVC, que lleva cloro), clase CPR con a1 (baja acidez), marcas conocidas y material (PVC) de tubos y canales."""
+    n = norm(texto)
+    at = at if at is not None else atributos(texto)
+    if re.search(r'con halogen|contiene halogen', n):
+        return 'contiene', 'el texto indica que contiene halógenos'
+    if re.search(r'libre(s)? de halogen|libre hal|sin halogen|cero halogen|0 ?% halogen|halogen.?free|\blszh\b|'
+                 r'\bls0h\b|\blsoh\b|\bzh\b|\(as\)|\bas\+?\b|\blh\b|corrug\.?lh|\brlh|\bnhxh', n):
+        return 'libre', 'el texto lo indica (AS / libre de halógenos / LH)'
+    tc = at.get('tipo_cable')
+    if tc in ('RZ1-K', 'H07Z1-K', 'XZ1', 'SZ1-K', 'RZ1MZ1-K', 'HEPRZ1'):
+        return 'libre', 'designación %s: aislamiento/cubierta de poliolefina "Z1", libre de halógenos' % tc
+    if tc in ('RV-K', 'H07V-K', 'VV-K', 'H05VV-F'):
+        return 'contiene', 'designación %s: cubierta/aislamiento de PVC ("V"), que contiene halógenos (cloro)' % tc
+    if re.search(r'z1-?k|\bz1\b|es07z1', n):
+        return 'libre', 'designación con Z1 (poliolefina libre de halógenos)'
+    for mca in MARCAS_LIBRES:
+        if mca in n:
+            return 'libre', 'la gama "%s" es libre de halógenos' % mca
+    for mca in MARCAS_CON:
+        if mca in n:
+            return 'contiene', 'la gama "%s" es de PVC' % mca
+    if re.search(r'\b[bcde]2?ca[- ]?s\d[a-z]?,? ?d\d,? ?a1\b', n):
+        return 'libre', 'clase CPR con a1 (baja acidez, propia de cables libres de halógenos)'
+    if re.search(r'\bpvc\b|policloruro', n):
+        return 'contiene', 'es de PVC (contiene cloro, un halógeno)'
+    if re.search(r'poliolefin|polietileno|polipropileno|\bpe\b|\bpp\b', n) and at.get('familia') in ('tubo', 'canal', 'bandeja'):
+        return 'libre', 'material poliolefínico (PE/PP), sin halógenos'
+    return None, 'no se ha podido deducir del texto'
+
+
 def atributos(texto, titulo=''):
     """Características técnicas que aparecen en el texto. Claves solo si se encuentran."""
     n = norm(titulo + ' ' + texto)
@@ -188,6 +230,8 @@ def atributos(texto, titulo=''):
         m = re.search(r'(\d{2,3})\s*x\s*(\d{2,3})', n)
         if m and fam in ('bandeja', 'canal'):
             a['dimensiones'] = tuple(sorted((int(m.group(1)), int(m.group(2)))))
+    if fam in ('cable', 'cable_datos', 'tubo', 'canal', 'bandeja'):
+        a['halogenos'], a['halogenos_motivo'] = halogenos(titulo + ' ' + texto, a)
     w = re.findall(r'(?<![\d.,])(\d{1,3}(?:\.\d{3})+|\d{1,4}(?:,\d+)?|\d{1,4}\.\d)\s*w\b(?!p)', n)
     if w:
         a['potencia_w'] = sorted({float(x.replace('.', '')) if re.fullmatch(r'\d{1,3}(?:\.\d{3})+', x) else _f(x)
@@ -429,13 +473,16 @@ def comparar(at_cli, at_prov):
     tc, tp = at_cli.get('tipo_cable'), at_prov.get('tipo_cable')
     if tc and tp and tc != tp:
         extra = ''
-        if tp == 'RV-K' and at_cli.get('libre_halogenos'):
-            extra = ' (RV-K NO es libre de halógenos)'
-        elif tc == 'RZ1-K' and tp == 'H07Z1-K':
+        if tc == 'RZ1-K' and tp == 'H07Z1-K':
             extra = ' (H07Z1-K es de 450/750 V, no 0,6/1 kV)'
         out.append(('alta' if extra else 'media', 'Tipo de cable distinto: pedido %s, ofertado %s%s.' % (tc, tp, extra)))
-    if at_cli.get('libre_halogenos') and tp and not at_prov.get('libre_halogenos') and tp not in ('XZ1',):
-        out.append(('media', 'Se pide libre de halógenos (AS) y la oferta no lo indica.'))
+    if at_cli.get('halogenos') == 'libre' and fp in ('cable', 'cable_datos', 'tubo', 'canal', 'bandeja'):
+        hp, motivo = at_prov.get('halogenos'), at_prov.get('halogenos_motivo') or ''
+        if hp == 'contiene':
+            out.append(('alta', 'Se pide libre de halógenos y lo ofertado CONTIENE halógenos: %s.' % motivo))
+        elif hp is None:
+            out.append(('baja', 'Se pide libre de halógenos y no se ha podido confirmar en la descripción de la oferta: '
+                                'revisar la ficha técnica.'))
     mc, mp = at_cli.get('material'), at_prov.get('material')
     if mc and mp and mc != mp:
         out.append(('alta', 'Material del conductor distinto: pedido %s, ofertado %s.' % (mc, mp)))

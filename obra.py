@@ -21,7 +21,7 @@ from .modelo import doc_a_dict, doc_de_dict
 from . import emparejar as M
 from .lectores import bc3, pdf_oferta, pdf_presupuesto
 
-VERSION_CACHE = 5
+VERSION_CACHE = 6
 
 
 def carpeta_datos():
@@ -32,12 +32,23 @@ def ruta_bbdd():
     return os.path.join(C.carpeta_local(), 'precios.db')
 
 
+def clave_mat(m):
+    """Identificador del material que no depende de la numeración: código de partida + sufijo (a, b...)."""
+    return '%s%s' % ((m.codigo or '').strip(), m.id[len(str(m.n)):])
+
+
 def _describir(tipo, d):
     return {'crear': 'creó la obra', 'cliente': 'subió el presupuesto del cliente %s' % d.get('archivo', '').split('/')[-1],
-            'proveedor': 'añadió la oferta de %s' % d.get('nombre'), 'quitar': 'quitó la oferta de %s' % d.get('nombre'),
+            'proveedor': '%s la oferta %s de %s' % ('añadió' if d.get('modo') == 'anadir' else 'subió (sustituyendo)',
+                                                    d.get('archivo', '').split('/')[-1], d.get('nombre')), 'quitar': 'quitó la oferta de %s' % d.get('nombre'),
             'fijar': 'casó la línea %s de %s con %s' % ((d.get('linea') or 0) + 1, d.get('proveedor'),
                                                         d.get('material') or '(sin casar)'),
-            'deshacer': 'deshizo la corrección de la línea %s de %s' % ((d.get('linea') or 0) + 1, d.get('proveedor'))
+            'deshacer': 'deshizo la corrección de la línea %s de %s' % ((d.get('linea') or 0) + 1, d.get('proveedor')),
+            'capitulos': 'eligió los capítulos que hacemos (%d)' % len(d.get('incluidos') or []),
+            'cliente_anadir': 'añadió al presupuesto del cliente %s' % ', '.join(
+                x['archivo'].split('/')[-1] for x in d.get('archivos') or []),
+            'cliente_quitar': 'quitó del presupuesto del cliente %s' % d.get('archivo', '').split('/')[-1],
+            'quitar_oferta': 'quitó la oferta %s de %s' % (d.get('archivo', '').split('/')[-1], d.get('nombre'))
             }.get(tipo, tipo)
 
 
@@ -62,8 +73,8 @@ def leer_cliente(ruta, progreso=None):
     if ext == '.pdf':
         return pdf_presupuesto.leer(ruta, progreso)
     if ext in ('.xlsx', '.xlsm'):
-        from .lectores import excel_obra, excel_generico
-        for lector in (excel_obra, excel_generico):
+        from .lectores import excel_proyecto, excel_obra, excel_generico
+        for lector in (excel_proyecto, excel_obra, excel_generico):
             try:
                 if lector.reconoce(ruta):
                     return lector.leer(ruta)
@@ -104,31 +115,65 @@ class Obra:
 
     def recargar(self):
         e = {'nombre': os.path.basename(self.carpeta), 'creada': None, 'cliente': None, 'proveedores': [],
-             'manuales': {}, 'historial': []}
+             'manuales': {}, 'historial': [], 'capitulos': None,      # capitulos None = aún sin elegir
+             'ofertas': [], 'capitulos_previos': None, 'capitulos_conocidos': []}
         for ev in C.leer_eventos(self.dir_eventos):
             d, t = ev.get('datos') or {}, ev.get('tipo')
             quien = ev.get('usuario')
             if t == 'crear':
                 e['nombre'] = d.get('nombre') or e['nombre']
                 e['creada'] = e['creada'] or ev.get('cuando')
-            elif t == 'cliente':
-                e['cliente'] = {'archivo': d['archivo'], 'huella': d['huella'], 'usuario': quien, 'cuando': ev['cuando']}
-                e['manuales'] = {}                      # las correcciones dependían del presupuesto anterior
+            elif t in ('cliente', 'cliente_anadir'):
+                nuevos = d.get('archivos') or [{'archivo': d['archivo'], 'huella': d['huella']}]
+                if t == 'cliente' or not e['cliente']:
+                    e['cliente'] = {'archivos': [], 'usuario': quien, 'cuando': ev['cuando']}
+                    e['manuales'] = {}                  # las correcciones dependían del presupuesto anterior
+                    e['capitulos_previos'] = None
+                else:
+                    e['capitulos_previos'] = e['capitulos']     # se vuelve a preguntar, con lo elegido ya marcado
+                for x in nuevos:
+                    if all(y['huella'] != x['huella'] for y in e['cliente']['archivos']):
+                        e['cliente']['archivos'].append({'archivo': x['archivo'], 'huella': x['huella']})
+                e['cliente']['archivo'] = e['cliente']['archivos'][0]['archivo']
+                e['capitulos'] = None
+            elif t == 'cliente_quitar':
+                if e['cliente']:
+                    e['cliente']['archivos'] = [x for x in e['cliente']['archivos'] if x['huella'] != d['huella']]
+                    if not e['cliente']['archivos']:
+                        e['cliente'] = None
+                    else:
+                        e['cliente']['archivo'] = e['cliente']['archivos'][0]['archivo']
             elif t == 'proveedor':
                 nom = d['nombre']
-                e['proveedores'] = [p for p in e['proveedores'] if p['nombre'].lower() != nom.lower()]
-                e['proveedores'].append({'nombre': nom, 'archivo': d['archivo'], 'huella': d['huella'],
+                if d.get('modo', 'sustituir') == 'sustituir':   # (las ofertas de versiones anteriores sustituían)
+                    e['ofertas'] = [o for o in e['ofertas'] if o['proveedor'].lower() != nom.lower()]
+                    e['manuales'].pop(nom, None)
+                if all(o['huella'] != d['huella'] or o['proveedor'].lower() != nom.lower() for o in e['ofertas']):
+                    e['ofertas'].append({'proveedor': nom, 'archivo': d['archivo'], 'huella': d['huella'],
                                          'anadida': ev['cuando'], 'usuario': quien})
-                e['manuales'].pop(nom, None)
             elif t == 'quitar':
-                e['proveedores'] = [p for p in e['proveedores'] if p['nombre'] != d['nombre']]
+                e['ofertas'] = [o for o in e['ofertas'] if o['proveedor'] != d['nombre']]
                 e['manuales'].pop(d['nombre'], None)
+            elif t == 'quitar_oferta':
+                e['ofertas'] = [o for o in e['ofertas'] if o['huella'] != d['huella']]
+            elif t == 'capitulos':
+                e['capitulos'] = list(d.get('incluidos') or [])
+                e['capitulos_conocidos'] = list(d.get('conocidos') or [])
             elif t == 'fijar':
-                e['manuales'].setdefault(d['proveedor'], {})[str(d['linea'])] = d.get('material')
+                e['manuales'].setdefault(d['proveedor'], {})[str(d['linea'])] = {
+                    'id': d.get('material'), 'cod': d.get('material_cod')} if d.get('material') else None
             elif t == 'deshacer':
                 e['manuales'].get(d['proveedor'], {}).pop(str(d['linea']), None)
             e['historial'].append({'cuando': ev.get('cuando'), 'usuario': quien, 'tipo': t,
                                    'detalle': _describir(t, d)})
+        # proveedores = nombres con al menos una oferta (cada uno puede tener varias)
+        provs = {}
+        for o in e['ofertas']:
+            p = provs.setdefault(o['proveedor'].lower(), {'nombre': o['proveedor'], 'ofertas': [], 'anadida': o['anadida'],
+                                                          'usuario': o['usuario']})
+            p['ofertas'].append(o)
+            p['archivo'], p['huella'] = o['archivo'], o['huella']
+        e['proveedores'] = list(provs.values())
         self.estado = e
 
     def _evento(self, tipo, datos):
@@ -218,19 +263,30 @@ class Obra:
             os.replace(tmp, destino)
         return destino, h
 
-    def poner_cliente(self, ruta_origen, nombre_fichero=None, progreso=None):
-        doc = self._leer(ruta_origen, leer_cliente, progreso)           # falla aquí si no se puede leer
-        destino, h = self._copiar(ruta_origen, 'cliente', nombre_fichero or os.path.basename(ruta_origen))
-        self._evento('cliente', {'archivo': os.path.relpath(destino, self.carpeta).replace(os.sep, '/'), 'huella': h})
-        return doc
+    def poner_cliente(self, ruta_origen, nombre_fichero=None, progreso=None, anadir=False, mas=None):
+        """Sube el presupuesto del cliente. `mas`: otros ficheros del mismo proyecto [(ruta, nombre)].
+        anadir=True: se añade al presupuesto que ya hay (proyecto en varios ficheros) en vez de sustituirlo."""
+        archivos, doc = [], None
+        for ruta, nom in [(ruta_origen, nombre_fichero or os.path.basename(ruta_origen))] + list(mas or []):
+            doc = self._leer(ruta, leer_cliente, progreso)            # falla aquí si no se puede leer
+            destino, h = self._copiar(ruta, 'cliente', nom)
+            archivos.append({'archivo': os.path.relpath(destino, self.carpeta).replace(os.sep, '/'), 'huella': h})
+        tipo = 'cliente_anadir' if anadir and self.estado.get('cliente') else 'cliente'
+        self._evento(tipo, {'archivos': archivos})
+        return self.documento_cliente(progreso) if len(archivos) > 1 or tipo == 'cliente_anadir' else doc
 
-    def anadir_proveedor(self, ruta_origen, proveedor=None, nombre_fichero=None, progreso=None):
+    def quitar_cliente(self, huella_doc):
+        x = next((a for a in (self.estado.get('cliente') or {}).get('archivos', []) if a['huella'] == huella_doc), None)
+        if x:
+            self._evento('cliente_quitar', {'huella': huella_doc, 'archivo': x['archivo']})
+
+    def anadir_proveedor(self, ruta_origen, proveedor=None, nombre_fichero=None, progreso=None, sustituir=False):
         nombre_fichero = nombre_fichero or os.path.basename(ruta_origen)
         doc = self._leer(ruta_origen, leer_oferta, progreso)
         proveedor = (proveedor or pdf_oferta.proveedor_por_carpeta(ruta_origen) or doc.proveedor or 'Proveedor').strip()
         destino, h = self._copiar(ruta_origen, os.path.join('proveedores', nombre_seguro(proveedor)), nombre_fichero)
-        # una oferta nueva de un proveedor ya cargado sustituye a la anterior (el fichero viejo se conserva)
-        self._evento('proveedor', {'nombre': proveedor, 'huella': h,
+        # un proveedor puede tener varias ofertas (p. ej. una por capítulo); sustituir=True reemplaza las anteriores
+        self._evento('proveedor', {'nombre': proveedor, 'huella': h, 'modo': 'sustituir' if sustituir else 'anadir',
                                    'archivo': os.path.relpath(destino, self.carpeta).replace(os.sep, '/')})
         return proveedor, doc
 
@@ -242,6 +298,24 @@ class Obra:
     def fijar(self, proveedor, linea, material_id):
         """Corrección manual: la línea nº `linea` del proveedor va a `material_id` ('' o None = no casar)."""
         self._evento('fijar', {'proveedor': proveedor, 'linea': int(linea), 'material': material_id or None})
+
+    def elegir_capitulos(self, incluidos, conocidos=None):
+        """Capítulos del presupuesto del cliente que hacemos nosotros (claves de emparejar.arbol_capitulos).
+        conocidos: todos los capítulos que había al elegir (para marcar como nuevos los que aparezcan después)."""
+        if not incluidos:
+            raise ValueError('Elige al menos un capítulo.')
+        self._evento('capitulos', {'incluidos': list(incluidos), 'conocidos': list(conocidos or incluidos)})
+
+    @property
+    def pendiente_capitulos(self):
+        return bool(self.estado.get('cliente')) and self.estado.get('capitulos') is None
+
+    def documento_cliente(self, progreso=None):
+        """El presupuesto del cliente; si viene en varios ficheros, unido en uno solo."""
+        docs = [self._leer(os.path.join(self.carpeta, a['archivo']), leer_cliente, progreso)
+                for a in self.estado['cliente']['archivos']]
+        from .lectores.excel_proyecto import combinar_documentos
+        return combinar_documentos(docs, self.nombre)
 
     def deshacer(self, proveedor, linea):
         self._evento('deshacer', {'proveedor': proveedor, 'linea': int(linea)})
@@ -279,28 +353,60 @@ class Obra:
         if not self.estado.get('cliente'):
             raise ValueError('Falta el presupuesto del cliente.')
         avisar('Leyendo el presupuesto del cliente…')
-        cli = self._leer(os.path.join(self.carpeta, self.estado['cliente']['archivo']), leer_cliente, progreso)
+        cli = self.documento_cliente(progreso)
         materiales = M.materiales_cliente(cli)
+        self.total_materiales = len(materiales)
+        if self.estado.get('capitulos') is not None:           # solo los capítulos que hacemos nosotros
+            incl = set(self.estado['capitulos'])
+            materiales = [m for m in materiales if M.clave_material_cap(m) in incl]
+        por_cod = {}
+        for m in materiales:
+            por_cod.setdefault(clave_mat(m), m.id)
         conocidas = bbdd.conocidas() if bbdd else {}
         provs = []
         for p in self.estado['proveedores']:
             avisar('Casando la oferta de %s con el presupuesto…' % p['nombre'])
-            doc = self._leer(os.path.join(self.carpeta, p['archivo']), leer_oferta, progreso)
-            lineas = M.lineas_oferta(doc, p['nombre'])
-            manuales = {int(k): v for k, v in self.estado['manuales'].get(p['nombre'], {}).items()}
+            docs, lineas = [], []
+            for of in p['ofertas']:
+                doc = self._leer(os.path.join(self.carpeta, of['archivo']), leer_oferta, progreso)
+                varias = len(p['ofertas']) > 1
+                for k, l in enumerate(M.lineas_oferta(doc, p['nombre'])):
+                    l.i = len(lineas)
+                    l.uid = '%s:%d' % (of['huella'][:10], k)
+                    l.huella = of['huella']
+                    if varias:
+                        l.seccion = '%s · %s' % (os.path.splitext(os.path.basename(of['archivo']))[0][:24], l.seccion)
+                    lineas.append(l)
+                docs.append({'doc': doc, 'archivo': of['archivo'], 'huella': of['huella'], 'anadida': of['anadida'],
+                             'usuario': of['usuario']})
+            manuales = {}
+            uid_a_i = {l.uid: l.i for l in lineas}
+            for k, v in self.estado['manuales'].get(p['nombre'], {}).items():
+                li = uid_a_i.get(k)
+                if li is None and k.isdigit() and int(k) < len(lineas):    # correcciones de versiones anteriores
+                    li = int(k)
+                if li is None:
+                    continue
+                if v is None:
+                    manuales[li] = None
+                else:
+                    mid = por_cod.get(v.get('cod')) if v.get('cod') else None
+                    manuales[li] = mid or v.get('id')
             asign, sin, puntos = M.emparejar(materiales, lineas, manuales, conocidas)
             ofertas = M.construir_ofertas(materiales, asign)
-            provs.append({'nombre': p['nombre'], 'doc': doc, 'lineas': lineas, 'asign': asign, 'sin': sin,
-                          'ofertas': ofertas, 'puntos': puntos, 'archivo': p['archivo'], 'huella': p['huella']})
+            provs.append({'nombre': p['nombre'], 'doc': docs[0]['doc'], 'docs': docs, 'lineas': lineas, 'asign': asign,
+                          'sin': sin, 'ofertas': ofertas, 'puntos': puntos, 'archivo': docs[0]['archivo'],
+                          'huella': docs[0]['huella']})
         res = Resultado(self, cli, materiales, provs)
         if bbdd:
             avisar('Guardando precios en la base de datos y buscando precios históricos…')
             por_id = {m.id: m for m in materiales}
-            bbdd.sincronizar_obra(self.nombre, [p['nombre'] for p in provs], {p['huella'] for p in provs})
+            bbdd.sincronizar_obra(self.nombre, [p['nombre'] for p in provs], {d['huella'] for p in provs for d in p['docs']})
             for pv in provs:
                 asignado = {a.linea.i: por_id[a.material_id] for a in pv['asign'] if a.tipo == 'principal'}
-                bbdd.registrar_oferta(self.nombre, pv['nombre'], os.path.basename(pv['archivo']), pv['huella'],
-                                      pv['doc'], pv['lineas'], asignado)
+                for d in pv['docs']:
+                    bbdd.registrar_oferta(self.nombre, pv['nombre'], os.path.basename(d['archivo']), d['huella'], d['doc'],
+                                          [l for l in pv['lineas'] if l.huella == d['huella']], asignado)
             res.consultar_historico(bbdd)
         return res
 
