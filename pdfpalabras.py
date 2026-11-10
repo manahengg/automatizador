@@ -95,9 +95,11 @@ def paginas(ruta, progreso=None):
                 w['text'] = reparar_mojibake(w['text'])
             palabras = [w for w in palabras if w['text']]
             ocr = False
+            if progreso:
+                progreso('Leyendo página %d de %d' % (i + 1, n), i / n)
             if len(palabras) < 5:                     # página sin texto: es una imagen escaneada
                 if progreso:
-                    progreso('OCR de la página %d de %d (PDF escaneado)…' % (i + 1, n))
+                    progreso('Página %d de %d: es un escaneo, reconociendo el texto (OCR)…' % (i + 1, n), (i + 0.1) / n)
                 palabras = _ocr_pagina(ruta, i)
                 ocr = True
             out.append({'ancho': float(pag.width), 'alto': float(pag.height), 'palabras': palabras, 'ocr': ocr})
