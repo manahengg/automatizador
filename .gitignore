@@ -4,3 +4,4 @@ automatizador_datos/
 build/
 dist/
 *.spec.bak
+/venv
