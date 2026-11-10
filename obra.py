@@ -295,9 +295,18 @@ class Obra:
         if bbdd:
             bbdd.quitar_oferta(self.nombre, proveedor)
 
-    def fijar(self, proveedor, linea, material_id):
-        """Corrección manual: la línea nº `linea` del proveedor va a `material_id` ('' o None = no casar)."""
-        self._evento('fijar', {'proveedor': proveedor, 'linea': int(linea), 'material': material_id or None})
+    def quitar_oferta(self, huella_doc, bbdd=None):
+        """Quita UNA oferta (documento) de un proveedor; sus otras ofertas se mantienen."""
+        o = next((x for x in self.estado['ofertas'] if x['huella'] == huella_doc), None)
+        if o:
+            self._evento('quitar_oferta', {'huella': huella_doc, 'nombre': o['proveedor'], 'archivo': o['archivo']})
+
+    def fijar(self, proveedor, linea, material_id, material_cod=None):
+        """Corrección manual: la línea `linea` (identificador 'huella:nº' dentro de su documento) del proveedor va a
+        `material_id` ('' o None = no casar). Se guarda también el código de la partida (material_cod), para que la
+        corrección siga siendo válida aunque cambie la numeración al añadir ficheros al proyecto."""
+        self._evento('fijar', {'proveedor': proveedor, 'linea': str(linea), 'material': material_id or None,
+                               'material_cod': material_cod})
 
     def elegir_capitulos(self, incluidos, conocidos=None):
         """Capítulos del presupuesto del cliente que hacemos nosotros (claves de emparejar.arbol_capitulos).
@@ -318,7 +327,7 @@ class Obra:
         return combinar_documentos(docs, self.nombre)
 
     def deshacer(self, proveedor, linea):
-        self._evento('deshacer', {'proveedor': proveedor, 'linea': int(linea)})
+        self._evento('deshacer', {'proveedor': proveedor, 'linea': str(linea)})
 
     # -------------------------------------------------------------------------------------- caché de lecturas
     def _leer(self, ruta, lector, progreso=None):
