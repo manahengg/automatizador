@@ -46,9 +46,10 @@ FAMILIAS = [
     ('emergencia', r'emergencia|blq\.? ?auto'),
     ('downlight', r'downlight|downl\b|downl\.'),
     ('pantalla_estanca', r'estanca|damp proof|wt007|pantalla led|lestc'),
-    ('rail', r'\brail\b|carril|\btrack\b|acoplamiento|alimentacion trifasica t\.?t|conexion angular|tubo estructural'),
+    ('rail', r'\brail\b|carril|acoplamiento|alimentacion trifasica t\.?t|conexion angular|tubo estructural'),
     ('proyector', r'proyector|parscan|lightscan|spot\b|rejilla de panal|pieza especial de conexion'),
-    ('luminaria', r'luminaria|lumin\.|luminar\b|lampara|fine led|tira (de )?led|led strip|strip led|lineal|panel led|\bled\b.*\d+ ?lm|lima\b|ledlima'),
+    ('luminaria', r'luminaria|lumin\.|\blumin\b|luminar\b|lampara|fine led|tira (de )?led|led strip|strip led|lineal|panel led|\bled\b.*\d+ ?lm|lima\b|ledlima'),
+    ('rail', r'\btrack\b'),               # 'TRACK' solo decide si no dice antes que es luminaria/proyector
     ('control_iluminacion', r'pastilla rele|botonera|casambi|pantalla tactil|pasarela|bluetooth.*escenas|sistema de control|sist\.? control'),
     ('interruptor', r'interruptor|conmutador|pulsador'),
     ('base_enchufe', r'base (de )?ench|schuko|schuco|toma de corriente|\btc\b'),
@@ -65,7 +66,7 @@ COMPATIBLES = [
     {'interruptor', 'marco'}, {'base_enchufe', 'marco'}, {'gestor', 'analizador', 'trafo_corriente'},
     {'pararrayos', 'toma_tierra'}, {'modulo_fv', 'inversor', 'fusible', 'sobretensiones', 'smart_meter', 'cuadro', 'diferencial', 'magnetotermico'},
     {'cuadro', 'magnetotermico', 'diferencial', 'sobretensiones'}, {'rail', 'proyector'}, {'control_iluminacion', 'proyector'},
-    {'bandeja', 'canal'}, {'cable', 'cable_datos'},
+    {'bandeja', 'canal'}, {'cable', 'cable_datos'}, {'rail', 'luminaria', 'proyector'},
 ]
 TERMINOS_OPTICOS = r'\b(wide flood|extra wide flood|flood|spot|wall ?wash|haz)\b'
 
@@ -96,16 +97,20 @@ def familia(texto, titulo=''):
     if not any(len(w) >= 14 and re.search(r'[a-z]{4}', w) for w in todo.split()):
         return None                         # el texto no tiene palabras pegadas: no se busca dentro de las palabras
     pegado = todo.replace(' ', '')
+    mejor, largo = None, 0
     for fam, pat in FAMILIAS:
         if fam in ('canon', 'servicio', 'caja', 'marco'):
             continue
         p2 = pat.replace('\\b', '').replace(' ?', '').replace(' ', '')
         try:
-            if re.search(p2, pegado):
-                return fam
+            m = re.search(p2, pegado)
         except re.error:
             continue
-    return None
+        # dentro de palabras pegadas gana la coincidencia más larga: 'hanceg2track' es un carril ('track'),
+        # no un armario 'rack'
+        if m and len(m.group(0)) > largo:
+            mejor, largo = fam, len(m.group(0))
+    return mejor
 
 
 def compatibles(a, b):
@@ -509,6 +514,9 @@ def comparar(at_cli, at_prov):
         try:
             if int(ipp[0][:2]) < int(ipc[0][:2]):
                 out.append(('media', 'Grado de protección inferior: pedido IP%s, ofertado IP%s.' % (ipc[0], ipp[0])))
+            elif int(ipp[0][:2]) > int(ipc[0][:2]):
+                out.append(('baja', 'Grado de protección distinto: pedido IP%s, ofertado IP%s (superior; comprobar si '
+                                    'es lo que se necesita, suele ser más caro).' % (ipc[0], ipp[0])))
         except ValueError:
             pass
     fc_, fp_ = at_cli.get('fases') or set(), at_prov.get('fases') or set()

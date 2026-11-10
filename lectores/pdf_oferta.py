@@ -169,6 +169,7 @@ def leer(ruta, progreso=None):
         _repartir_continuaciones(sueltas)
         filas.extend(info for _, info in anclas_pag)
 
+    _recolocar_descripciones(filas)
     caps = {}
     previa = None
     for f in filas:
@@ -272,6 +273,20 @@ def _clasificar(l, cols):
             desc.pop(0)
     return {'tipo': 'ancla', 'num': numeros, 'codigo': codigo, 'marca': marca, 'desc': [' '.join(desc)] if desc else [],
             'top': l['top'], 'altura': l['altura']}
+
+
+def _recolocar_descripciones(filas):
+    """A veces la maqueta (o el OCR) pega la descripción de una línea al final de la anterior y la siguiente se queda
+    sin texto legible ('.234'). Si una descripción contiene una segunda descripción que empieza por '(*)' (marca de
+    artículo de Sonepar y otros) y la línea siguiente no tiene texto, ese trozo se pasa a la siguiente."""
+    for a, b in zip(filas, filas[1:]):
+        da, db = ' '.join(a['desc']), ' '.join(b['desc'])
+        if len(re.findall(r'[A-Za-zÁÉÍÓÚÑáéíóúñ]', db)) >= 3:
+            continue
+        m = re.search(r'\s\(\*\)\s*(.+)$', da)
+        if m and len(re.findall(r'[A-Za-z]', m.group(1))) >= 6:
+            a['desc'] = [da[:m.start()].strip()]
+            b['desc'] = [(m.group(1) + ' ' + db).strip()]
 
 
 def _rescatar_desc(ruta, npag, l, info, cols):

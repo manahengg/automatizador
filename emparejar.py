@@ -111,9 +111,19 @@ def _es_pegada(palabra):
     return len(palabra) >= 14 and len(re.findall(r'[a-z]{4,}', palabra)) >= 2
 
 
+ACCESORIOS_PEGADOS = ('acc.', 'accesorio', 'lampacc', 'perfilempotr', 'perfil', 'difusor', 'driver', 'drv', 'tapafinal',
+                      'endcover', 'joint', 'alimentaciondcha', 'alimentacionizq', 'steelcable', 'soporte',
+                      'embellecedor', 'rejilla')
+
+
 def es_accesorio_texto(texto):
-    """Se mira el principio de la descripción ('FIL45 ACC. ...', 'PERFIL ...'), donde se dice qué es el artículo."""
-    return bool(RE_ACCESORIO.search(E.norm(texto)[:25]))
+    """Se mira el principio de la descripción ('FIL45 ACC. ...', 'PERFIL ...'), donde se dice qué es el artículo.
+    También sin espacios, porque el OCR puede pegar las palabras ('ALIMENTACIONDCHA.P/CRL', 'TAPAFINALPARACARRIL')."""
+    n = E.norm(texto)
+    if RE_ACCESORIO.search(n[:25]):
+        return True
+    pegado = re.sub(r'[^a-z0-9.]', '', n)[:22]
+    return any(p in pegado for p in ACCESORIOS_PEGADOS)
 
 
 def _tokens(texto):
@@ -202,12 +212,30 @@ def lineas_oferta(doc, proveedor):
                       atributos=E.atributos(p.descripcion), tokens=_tokens(p.descripcion), plantas=_plantas(cap.titulo))
             # texto pegado por el OCR ('LUM.TECHOPLATG3600X6003200830PRISM'): se guarda para buscar dentro
             l.pegado = _pegado(p.descripcion) if any(_es_pegada(t) for t in E.norm(p.descripcion).split()) else ''
+            l.gramas = _gramas(p.descripcion[:70])
             out.append(l)
     return out
 
 
 # ------------------------------------------------------------------------------------------- puntuación
 _IDF, _IDF_MAX = {}, 1.0
+_IDF_G, _IDF_G_MAX = {}, 1.0
+
+
+def _gramas(texto, n=4):
+    """Trozos de 4 caracteres del texto SIN espacios: 'KOMBIC70SF1500' y 'KOMBIC 70 SF 1500' comparten casi todos,
+    así que se reconocen aunque el OCR pegue o separe las palabras."""
+    t = re.sub(r'[^a-z0-9]', '', E.norm(texto))
+    return {t[i:i + n] for i in range(max(0, len(t) - n + 1))}
+
+
+def sim_gramas(l, m):
+    """0..1: cuánto del texto de la línea (pesado por rareza en el presupuesto) aparece en el título del material."""
+    gl, gm = getattr(l, 'gramas', None), getattr(m, 'gramas', None)
+    if not gl or not gm:
+        return 0.0
+    total = sum(_IDF_G.get(g, _IDF_G_MAX) for g in gl)
+    return sum(_IDF_G.get(g, _IDF_G_MAX) for g in gl & gm) / total if total else 0.0
 
 
 def preparar_idf(materiales):
@@ -218,6 +246,13 @@ def preparar_idf(materiales):
     n = max(1, len(materiales))
     _IDF = {t: math.log(1 + n / c) for t, c in df.items()}
     _IDF_MAX = math.log(1 + n)
+    global _IDF_G, _IDF_G_MAX
+    for m in materiales:
+        if not hasattr(m, 'gramas'):
+            m.gramas = _gramas((m.partida.resumen or m.descripcion[:120]) + ' ' + (m.codigo or ''))
+    dg = collections.Counter(g for m in materiales for g in m.gramas)
+    _IDF_G = {g: math.log(1 + n / c) for g, c in dg.items()}
+    _IDF_G_MAX = math.log(1 + n)
 
 
 def puntuar(l, m, conocidas=None):
@@ -263,12 +298,18 @@ def puntuar(l, m, conocidas=None):
         else:
             n_c = len(comun)
             s += 0.3 * (0.6 * n_c / max(1, min(len(l.tokens), 12)) + 0.4 * n_c / max(1, len(l.tokens | m.tokens)) * 3)
+        # parecido por trozos de caracteres (robusto a palabras pegadas o partidas por el OCR)
+        s += 0.35 * sim_gramas(l, m)
         # números de modelo (3+ cifras: 1400, 1960, 35558...): coincidir suma; si los hay en ambos y ninguno coincide, resta
         nl = {t for t in l.tokens if t.isdigit() and len(t) >= 3}
         nm = {t for t in m.tokens if t.isdigit() and len(t) >= 3}
         if nl and nm:
             s += 0.12 * len(nl & nm) / len(nl) if nl & nm else -0.12
     q1, q2 = l.partida.cantidad or 0, m.cantidad or 0
+    if q1 and q2 and (m.unidad or '').lower().rstrip('.') in ('m', 'ml'):
+        lm = _metros_pieza(l.partida.descripcion)       # rollos / piezas de N m frente a metros del cliente
+        if lm and abs(q1 * lm / q2 - 1) < abs(q1 / q2 - 1):
+            q1 = q1 * lm
     if q1 and q2:
         r = q1 / q2
         if 0.995 <= r <= 1.005:
@@ -343,7 +384,8 @@ def emparejar(materiales, lineas, manuales=None, conocidas=None):
         mm_ = por_id[mid]
         misma_fam = l.atributos.get('familia') and l.atributos.get('familia') == mm_.atributos.get('familia')
         misma_cant = bool(l.partida.cantidad and mm_.cantidad) and abs(l.partida.cantidad / mm_.cantidad - 1) < 0.005
-        if sc >= (0.28 if misma_fam else 0.18) and not l.es_accesorio and (misma_fam or misma_cant) \
+        if sc >= (0.28 if misma_fam else 0.18) and not l.es_accesorio \
+                and (misma_fam or (misma_cant and sim_gramas(l, mm_) >= 0.2)) \
                 and li not in hecho and mid not in cubiertos:
             asign.append(Asignacion(mid, l, 'principal', sc))
             hecho.add(li)
@@ -399,8 +441,8 @@ def emparejar(materiales, lineas, manuales=None, conocidas=None):
             continue
         mejor_acc, mejor_peso = None, 0.0
         for j in range(l.i - 1, max(-1, l.i - 9), -1):
-            if j not in mat_por_linea:
-                continue
+            if j not in mat_por_linea or por_i[j].es_accesorio:
+                continue                        # se compara con artículos principales, no con otros accesorios
             otra = por_i[j]
             raras = {t for t in (l.tokens & otra.tokens) if _IDF.get(t, _IDF_MAX) > 1.5 and not t.isdigit()}
             peso = sum(_IDF.get(t, _IDF_MAX) for t in raras)
@@ -409,12 +451,32 @@ def emparejar(materiales, lineas, manuales=None, conocidas=None):
             peso *= max(0.3, 1 - 0.1 * (l.i - j - 1))        # a igualdad, el artículo más cercano en la oferta
             if peso > mejor_peso:
                 mejor_acc, mejor_peso = mat_por_linea[j], peso
-        if mejor_acc is None and l.i - 1 in mat_por_linea:
-            mejor_acc = mat_por_linea[l.i - 1]
+        if mejor_acc is None:                    # sin nada en común: con el artículo principal más cercano anterior
+            mejor_acc = next((mat_por_linea[j] for j in range(l.i - 1, max(-1, l.i - 9), -1)
+                              if j in mat_por_linea and not por_i[j].es_accesorio), None)
         if mejor_acc and not _choca(por_id[mejor_acc], l, ignorar_familia=True):
             asign.append(Asignacion(mejor_acc, l, 'complemento', puntuar(l, por_id[mejor_acc], conocidas)))
             mat_por_linea[l.i] = mejor_acc
             hecho.add(l.i)
+    # 2c) por posición: una línea suelta entre dos líneas principales casadas con las partidas n1 y n2, si entre ellas hay
+    #     UNA sola partida sin oferta con la misma cantidad (p. ej. el OCR perdió la descripción: '.234')
+    principales = {a.linea.i: por_id[a.material_id] for a in asign if a.tipo == 'principal'}
+    for l in normales:
+        if l.i in hecho or not l.partida.cantidad or l.partida.precio is None:
+            continue
+        ant = next((principales[j] for j in range(l.i - 1, -1, -1) if j in principales), None)
+        sig = next((principales[j] for j in range(l.i + 1, len(lineas)) if j in principales), None)
+        if not ant or not sig or ant.n >= sig.n:
+            continue
+        huecos = [m for m in materiales if ant.n < m.n < sig.n and m.id not in cubiertos and m.cantidad
+                  and abs(m.cantidad / l.partida.cantidad - 1) < 0.005]
+        if len(huecos) == 1:
+            a = Asignacion(huecos[0].id, l, 'principal', 0.15)
+            a.por_posicion = True
+            asign.append(a)
+            cubiertos.add(huecos[0].id)
+            hecho.add(l.i)
+            mat_por_linea[l.i] = huecos[0].id
     # 3) cánones con su línea
     for l in lineas:
         if l.i in usadas or not l.es_canon:
@@ -455,8 +517,8 @@ def _mejorar(asign, materiales, lineas, normales, puntos, por_id, hecho, cubiert
     def mapa():
         return {a.linea.i: por_id[a.material_id].n for a in asign if a.tipo == 'principal'}
 
-    def bono(li, n, m_actual):
-        return BONO if any(m_actual.get(j) == n for j in range(li - 6, li + 7) if j != li) else 0.0
+    def bono(li, n, m_actual, excluir=()):
+        return BONO if any(m_actual.get(j) == n for j in range(li - 6, li + 7) if j != li and j not in excluir) else 0.0
 
     candidatos = {l.i: [(sc, mid) for sc, mid in puntos[l.i] if sc >= 0.2 and _puede_ser_principal(l, por_id[mid], sc)]
                   for l in normales}
@@ -495,8 +557,10 @@ def _mejorar(asign, materiales, lineas, normales, puntos, por_id, hecho, cubiert
                 sa = dict(candidatos[a.linea.i]).get  # noqa
                 pab = puntuar(a.linea, mb, conocidas)
                 pba = puntuar(b.linea, ma, conocidas)
-                antes = a.puntuacion + b.puntuacion + bono(a.linea.i, ma.n, mm) + bono(b.linea.i, mb.n, mm)
-                despues = pab + pba + bono(a.linea.i, mb.n, mm) + bono(b.linea.i, ma.n, mm)
+                # el bono no puede venir de las propias líneas que se intercambian (si no, cambiar siempre "compensa")
+                ex = (a.linea.i, b.linea.i)
+                antes = a.puntuacion + b.puntuacion + bono(a.linea.i, ma.n, mm, ex) + bono(b.linea.i, mb.n, mm, ex)
+                despues = pab + pba + bono(a.linea.i, mb.n, mm, ex) + bono(b.linea.i, ma.n, mm, ex)
                 if despues > antes + 0.05 and min(pab, pba) >= UMBRAL_PRINCIPAL - 0.15:
                     a.material_id, b.material_id = mb.id, ma.id
                     a.puntuacion, b.puntuacion = pab, pba
@@ -564,6 +628,17 @@ def construir_ofertas(materiales, asignaciones):
         sueltas = sum(x.partida.precio for x in validas if x.partida.precio is not None and not x.partida.cantidad
                       and x is not ppal)
         o.importe_ofertado = round(suma, 2)
+        # material en metros y proveedor que vende piezas de N m (rollo de 5 m, carril de 2 m): se pasa a metros
+        nota_metros = None
+        if (m.unidad or '').lower().rstrip('.') in ('m', 'ml') and m.cantidad and cant:
+            piezas = [(x, _metros_pieza(x.partida.descripcion)) for x in validas
+                      if not x.es_accesorio and x.partida.cantidad]
+            piezas = [(x, lm) for x, lm in piezas if lm]
+            if piezas:
+                metros = sum(x.partida.cantidad * lm for x, lm in piezas)
+                if abs(metros - m.cantidad) < abs(cant - m.cantidad):
+                    nota_metros = ' + '.join('%s x %s m' % (E._num(x.partida.cantidad), E._num(lm)) for x, lm in piezas)
+                    cant = metros
         if ppal.partida.precio is not None:
             if cant:
                 o.precio = suma / cant + sueltas
@@ -571,6 +646,9 @@ def construir_ofertas(materiales, asignaciones):
                 o.precio = ppal.partida.precio + sueltas
             o.cant_prov = cant
             o.importe = round(o.precio * (m.cantidad or 0), 2)
+        if nota_metros:
+            o.alertas.append(('baja', 'Se oferta en piezas (%s = %s m): el unitario se ha pasado a €/m.' % (
+                nota_metros, E._num(cant))))
         o.codigos = ' + '.join(dict.fromkeys(x.referencia or '(s/c)' for x in [ppal] + extras if not x.es_canon))
         o.descripcion = ppal.partida.descripcion + (' (+%d líneas: %s)' % (
             len(extras), '; '.join(x.partida.descripcion[:40] for x in extras)) if extras else '')
@@ -578,6 +656,14 @@ def construir_ofertas(materiales, asignaciones):
             o.alertas.append((g, t))
         if ppal.partida.opcional:
             o.alertas.append(('media', 'La línea está marcada como OPCIONAL en la oferta.'))
+        dif_modelo = _numeros_distintos(m.partida.resumen or m.descripcion, ppal.partida.descripcion)
+        if dif_modelo:
+            o.alertas.append(('media', 'Números de modelo/medidas distintos: el cliente pide %s y la oferta trae %s. '
+                                       'Comprobar que es el mismo artículo.' % dif_modelo))
+        if getattr(pri, 'por_posicion', False):
+            o.alertas.append(('media', 'Casada por POSICIÓN: la línea "%s" no tiene una descripción legible, pero está entre '
+                                       'las líneas de las partidas vecinas y tiene la misma cantidad. Comprobar.'
+                              % ppal.partida.descripcion[:40]))
         if ppal.partida.precio is None:
             o.alertas.append(('media', 'El proveedor no da precio para esta línea.'))
         opc = [x for x in extras if x.partida.opcional]
@@ -614,6 +700,42 @@ def construir_ofertas(materiales, asignaciones):
                                   'potencia pedida.' % (E._num(m.cantidad), necesarios)))
         out[mid] = o
     return out
+
+
+def _numeros_modelo(texto):
+    """Números de 3-5 cifras del principio del texto (modelos, medidas, lúmenes: 100, 2000, 1500, 600X600...)."""
+    n = E.norm(texto)[:70]
+    # números sueltos (no dentro de un código como 'cayp252m2t2' o '2700610-030'), que no empiecen por 0, que no sean
+    # temperaturas de color ni lúmenes/vatios (esos los comprueban los atributos)
+    nums = re.findall(r'(?<![a-z0-9.,\-])(\d{3,5})(?=$|ww\b|[^0-9.,a-z])', n)
+    return {x for x in nums if not x.startswith('0') and x not in ('2700', '3000', '3500', '4000', '5000', '6500')}
+
+
+def _numeros_distintos(titulo_cliente, desc_oferta):
+    """('100, 2000', '1500') si cliente y oferta citan números de modelo distintos; None si coinciden o no hay."""
+    nc, no = _numeros_modelo(titulo_cliente), _numeros_modelo(desc_oferta)
+    # un número 'pegado' por el OCR a otro ('3400830') cuenta como presente
+    pc = re.sub(r'[^0-9a-z]', '', E.norm(titulo_cliente))
+    po = re.sub(r'[^0-9a-z]', '', E.norm(desc_oferta))
+    faltan = {x for x in nc - no if x not in po}
+    sobran = {x for x in no - nc if x not in pc}
+    if not nc or not no or not faltan or not sobran or len(nc & no) >= len(faltan):
+        return None
+    return ', '.join(sorted(faltan, key=int)), ', '.join(sorted(sobran, key=int))
+
+
+def _metros_pieza(texto):
+    """Longitud de una pieza vendida por unidades: '5MX10' (rollo de 5 m), 'SUPF.2M' (carril de 2 m), 'L=3m',
+    'RO.25M' (rollo de 25 m). None si no se indica."""
+    n = E.norm(texto)
+    for pat in (r'(?<![\d.,])(\d{1,3}(?:[.,]\d)?)\s*m\s*x\s*\d', r'\bro\.?\s*(\d{1,3})\s*m\b', r'\bl\s*=\s*(\d{1,2}(?:[.,]\d)?)\s*m\b',
+                r'(?<![\d.,x])(\d{1,2}(?:[.,]\d)?)\s*m(?:ts|etros)?\b(?!m)', r'\.(\d{1,2})m\b'):
+        mm = re.search(pat, n)
+        if mm:
+            v = float(mm.group(1).replace(',', '.'))
+            if 0.3 <= v <= 500:
+                return v
+    return None
 
 
 def comparacion_cantidad(cant_prov, cant_mat):
