@@ -19,7 +19,9 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 import traceback
+import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
@@ -67,14 +69,14 @@ def _marca(o):
     return (o.marca(), VERSION['conocimiento'])
 
 
-def analisis(o, forzar=False):
+def analisis(o, forzar=False, progreso=None):
     with BLOQUEO:
         o.recargar()
         m = _marca(o)
         c = _CACHE.get(o.ident)
         if c and c[0] == m and not forzar:
             return c[1]
-        r = o.analizar(db())
+        r = o.analizar(db(), progreso=progreso)
         _CACHE[o.ident] = (m, r)
         return r
 
@@ -156,6 +158,82 @@ def datos_obra(o):
     base.update(materiales=mats, lineas=lineas, total_cliente=total_cli, totales=totales,
                 cliente_nombre=r.cliente.nombre, avisos_cliente=[a.texto for a in r.cliente.avisos if a.nivel != 'info'])
     return base
+
+
+TRABAJOS = {}          # id -> Trabajo (subidas en curso, para la barra de progreso)
+
+
+class Trabajo:
+    """Una subida que se procesa en segundo plano y va contando por dónde va."""
+
+    def __init__(self, titulo):
+        self.id = uuid.uuid4().hex
+        self.titulo = titulo
+        self.inicio = time.time()
+        self.estado = 'trabajando'           # trabajando | listo | error
+        self.texto = 'Preparando…'
+        self.fraccion = 0.0
+        self.pasos = []                       # [{'texto', 'seg'}] pasos terminados
+        self._t_paso = time.time()
+        self.mensaje = ''
+        TRABAJOS[self.id] = self
+        for k in [k for k, t in TRABAJOS.items() if time.time() - t.inicio > 3600]:
+            TRABAJOS.pop(k, None)
+
+    def paso(self, texto, fraccion=None):
+        if texto != self.texto:
+            if self.texto and not self.texto.startswith('Preparando'):
+                self.pasos.append({'texto': self.texto, 'seg': round(time.time() - self._t_paso, 1)})
+                del self.pasos[:-40]
+            self.texto, self._t_paso = texto, time.time()
+        if fraccion is not None:
+            self.fraccion = max(self.fraccion, min(1.0, fraccion))
+
+    def tramo(self, desde, hasta, prefijo=''):
+        """Callback de progreso de un documento que ocupa [desde, hasta] de la barra total."""
+        def cb(texto, frac=None):
+            self.paso(prefijo + texto, None if frac is None else desde + (hasta - desde) * frac)
+        return cb
+
+    def json(self):
+        return {'id': self.id, 'titulo': self.titulo, 'estado': self.estado, 'texto': self.texto,
+                'fraccion': round(self.fraccion, 3), 'pasos': self.pasos, 'mensaje': self.mensaje,
+                'segundos': round(time.time() - self.inicio), 'seg_paso': round(time.time() - self._t_paso)}
+
+
+def procesar_subida(trabajo, o, accion, ficheros, campos, carpeta_tmp):
+    """Lee los documentos subidos, analiza la obra y deja el resultado en el trabajo (hilo aparte)."""
+    hechos = []
+    n = len(ficheros)
+    try:
+        with BLOQUEO:
+            for k, (nombre_f, ruta_tmp) in enumerate(ficheros):
+                pre = '%s · ' % nombre_f if n > 1 else ''
+                cb = trabajo.tramo(0.85 * k / n, 0.85 * (k + 1) / n, pre)
+                cb('Abriendo el documento…', 0)
+                if accion == 'cliente':
+                    d = o.poner_cliente(ruta_tmp, nombre_f, progreso=cb)
+                    hechos.append('Presupuesto del cliente: %d partidas, %s €' % (
+                        sum(1 for _ in d.partidas()), ('%.2f' % d.importe).replace('.', ',')))
+                else:
+                    nombre_prov = (campos.get('proveedor') or '').strip() if n == 1 else ''
+                    prov, d = o.anadir_proveedor(ruta_tmp, nombre_prov or None, nombre_f, progreso=cb)
+                    hechos.append('%s: %d líneas leídas' % (prov, sum(1 for _ in d.partidas())))
+                cb('Leído: ' + hechos[-1], 1.0)
+            if o.estado.get('cliente'):
+                cb = trabajo.tramo(0.85, 1.0)
+                cb('Casando ofertas con el presupuesto y consultando la base de datos de precios…', 0.1)
+                analisis(o, progreso=lambda t, f=None: cb(t, 0.5))
+        trabajo.paso('Terminado', 1.0)
+        trabajo.mensaje = ' · '.join(hechos)
+        trabajo.estado = 'listo'
+    except (ValueError, OSError) as e:
+        trabajo.estado, trabajo.mensaje = 'error', str(e)
+    except Exception as e:
+        traceback.print_exc()
+        trabajo.estado, trabajo.mensaje = 'error', 'Fallo inesperado (%s: %s).' % (type(e).__name__, e)
+    finally:
+        shutil.rmtree(carpeta_tmp, ignore_errors=True)
 
 
 class Sincronizador(threading.Thread):
@@ -263,6 +341,10 @@ def servir(puerto=8765, abrir=True):
             m = re.fullmatch(r'/api/obra/([^/]+)/excel', ruta)
             if m:
                 return self._proteger(lambda: self._excel(Obra.abrir(m.group(1))))
+            m = re.fullmatch(r'/api/trabajo/([0-9a-f]{32})', ruta)
+            if m:
+                t = TRABAJOS.get(m.group(1))
+                return self._json(t.json()) if t else self._error(404, 'Trabajo desconocido.')
             if ruta == '/api/cambios':
                 desde = int((q.get('v') or ['0'])[0] or 0)
                 return self._json({'v': VERSION['n'], 'cambios': [c for c in VERSION['cambios'] if c['v'] > desde],
@@ -352,25 +434,21 @@ def servir(puerto=8765, abrir=True):
                 if accion in ('cliente', 'proveedor'):
                     partes = parsear_multipart(self.headers.get('Content-Type', ''), self._cuerpo())
                     campos = {k: v.decode('utf-8', 'replace') for k, f, v in partes if not f}
-                    ficheros = [(f, v) for k, f, v in partes if f and v]
-                    if not ficheros:
+                    recibidos = [(f, v) for k, f, v in partes if f and v]
+                    if not recibidos:
                         raise ValueError('No se ha recibido ningún fichero.')
-                    hechos = []
-                    with BLOQUEO, tempfile.TemporaryDirectory() as tmp:
-                        for nombre_f, datos in ficheros:
-                            nombre_f = os.path.basename(nombre_f.replace('\\', '/'))
-                            ruta_tmp = os.path.join(tmp, nombre_f)
-                            with open(ruta_tmp, 'wb') as fh:
-                                fh.write(datos)
-                            if accion == 'cliente':
-                                d = o.poner_cliente(ruta_tmp, nombre_f)
-                                hechos.append('Presupuesto del cliente: %d partidas, %.2f €' % (
-                                    sum(1 for _ in d.partidas()), d.importe))
-                            else:
-                                nombre_prov = (campos.get('proveedor') or '').strip() if len(ficheros) == 1 else ''
-                                prov, d = o.anadir_proveedor(ruta_tmp, nombre_prov or None, nombre_f)
-                                hechos.append('%s: %d líneas leídas' % (prov, sum(1 for _ in d.partidas())))
-                    return self._json({'ok': True, 'mensaje': ' · '.join(hechos)})
+                    tmp = tempfile.mkdtemp(prefix='subida_')
+                    ficheros = []
+                    for nombre_f, datos in recibidos:
+                        nombre_f = os.path.basename(nombre_f.replace('\\', '/'))
+                        ruta_tmp = os.path.join(tmp, nombre_f)
+                        with open(ruta_tmp, 'wb') as fh:
+                            fh.write(datos)
+                        ficheros.append((nombre_f, ruta_tmp))
+                    t = Trabajo(', '.join(f for f, _ in ficheros))
+                    threading.Thread(target=procesar_subida, args=(t, o, accion, ficheros, campos, tmp),
+                                     daemon=True).start()
+                    return self._json({'ok': True, 'trabajo': t.id})
                 datos = self._json_cuerpo()
                 with BLOQUEO:
                     if accion == 'quitar':

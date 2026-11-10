@@ -255,7 +255,10 @@ class Obra:
         if os.path.exists(cache):
             try:
                 with open(cache, encoding='utf-8') as f:
-                    return doc_de_dict(json.load(f))
+                    doc = doc_de_dict(json.load(f))
+                if progreso:
+                    progreso('Documento ya leído: se reutiliza su lectura (sin repetir el OCR)', 1.0)
+                return doc
             except (OSError, ValueError, KeyError, TypeError):
                 pass
         doc = lector(ruta, progreso)
@@ -272,7 +275,7 @@ class Obra:
     # -------------------------------------------------------------------------------------- análisis
     def analizar(self, bbdd=None, progreso=None):
         """Lee todo, empareja cada proveedor, consulta y alimenta la base de datos de precios."""
-        avisar = progreso or (lambda t: None)
+        avisar = progreso or (lambda t, f=None: None)
         if not self.estado.get('cliente'):
             raise ValueError('Falta el presupuesto del cliente.')
         avisar('Leyendo el presupuesto del cliente…')
@@ -281,7 +284,7 @@ class Obra:
         conocidas = bbdd.conocidas() if bbdd else {}
         provs = []
         for p in self.estado['proveedores']:
-            avisar('Leyendo y casando la oferta de %s…' % p['nombre'])
+            avisar('Casando la oferta de %s con el presupuesto…' % p['nombre'])
             doc = self._leer(os.path.join(self.carpeta, p['archivo']), leer_oferta, progreso)
             lineas = M.lineas_oferta(doc, p['nombre'])
             manuales = {int(k): v for k, v in self.estado['manuales'].get(p['nombre'], {}).items()}
