@@ -1,7 +1,9 @@
 name: Instalador Windows
 
-# Construye ComparadorOfertas.exe (PyInstaller) y el instalador ComparadorOfertas_Setup.exe (Inno Setup)
-# en una máquina Windows de GitHub. Descarga: pestaña Actions -> última ejecución -> Artifacts.
+# Construye el instalador ComparadorOfertas_Setup.exe (Inno Setup) en una máquina Windows de GitHub.
+# No se genera ningún .exe propio: se instala el Python embebido OFICIAL (firmado) + el código de la app, para que
+# Smart App Control / Control de aplicaciones de Windows no bloquee la app (ver windows/empaquetar.py).
+# Descarga: pestaña Actions -> última ejecución -> Artifacts.
 on:
   push:
     branches: ['**']
@@ -18,12 +20,12 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.12'       # misma versión X.Y que el Python embebido de windows/empaquetar.py
 
       - name: Dependencias
         run: |
           python -m pip install --upgrade pip
-          pip install -r automatizador/requirements.txt pyinstaller
+          pip install -r automatizador/requirements.txt
 
       - name: Prueba rápida (lee los ejemplos y genera el Excel)
         shell: bash
@@ -36,17 +38,23 @@ jobs:
         shell: bash
         run: python -m automatizador.tests.test_flujo
 
-      - name: Ejecutable (PyInstaller)
-        run: pyinstaller --noconfirm automatizador/windows/comparador.spec
+      - name: Paquete (Python embebido oficial + librerías de PyPI + código de la app)
+        run: python automatizador/windows/empaquetar.py paquete
 
-      - name: Prueba del ejecutable
+      - name: Prueba del paquete (su propio Python, OCR y servidor)
         shell: pwsh
         run: |
-          $env:AUTOMATIZADOR_DATOS = "$env:RUNNER_TEMP\datos_exe"
-          $p = Start-Process -FilePath "dist\ComparadorOfertas\ComparadorOfertas.exe" -ArgumentList "--no-abrir" -PassThru
-          Start-Sleep -Seconds 15
+          $py = "$pwd\paquete\python\python.exe"
+          & $py -c "import automatizador.app_web, rapidocr_onnxruntime, pdfplumber, openpyxl, numpy, pypdfium2; print('importaciones OK')"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $pdf = "$pwd\automatizador\obras\mormones\proveedores\sonepar\ilumlamp(SOLO ILUM.LAMP.).pdf"
+          & $py -c "import sys; from automatizador.lectores import pdf_oferta; d = pdf_oferta.leer(sys.argv[1]); n = sum(1 for _ in d.partidas()); print('OCR Sonepar:', n, 'lineas'); sys.exit(0 if n > 20 else 1)" $pdf
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $env:AUTOMATIZADOR_DATOS = "$env:RUNNER_TEMP\datos_paquete"
+          $p = Start-Process -FilePath $py -ArgumentList "`"$pwd\paquete\app\automatizador\windows\lanzador.py`"", "--no-abrir" -WorkingDirectory "$pwd\paquete\app" -PassThru
+          Start-Sleep -Seconds 12
           $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8765/api/obras
-          Write-Host "Respuesta:" $r.StatusCode $r.Content
+          Write-Host "Servidor:" $r.StatusCode $r.Content
           Stop-Process -Id $p.Id -Force
           if ($r.StatusCode -ne 200) { exit 1 }
 
@@ -54,17 +62,11 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
-          $v = "1.0.${{ github.run_number }}"
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DVersion=$v" "/DOrigen=$pwd\dist\ComparadorOfertas" "/O$pwd\instalador" automatizador\windows\instalador.iss
+          $v = "1.1.${{ github.run_number }}"
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DVersion=$v" "/DOrigen=$pwd\paquete" "/O$pwd\instalador" automatizador\windows\instalador.iss
 
       - uses: actions/upload-artifact@v4
         with:
           name: ComparadorOfertas_Setup
           path: instalador/*.exe
           retention-days: 30
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ComparadorOfertas_portable
-          path: dist/ComparadorOfertas
-          retention-days: 7
