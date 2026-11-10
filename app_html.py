@@ -97,8 +97,14 @@ async function subir(tipo){const inp=tipo=='cliente'?$('#fCli'):$('#fProv');if(!
   await new Promise(z=>setTimeout(z,500));verProgreso(false);aviso(j.mensaje);PEST='comp';await abrirObra(OBRA)}
  catch(e){verProgreso(false);aviso(e.message,1)}finally{OCUPADO=false}}
 async function quitar(p){OCUPADO=true;const ok=confirm('¿Quitar la oferta de '+p+'?');OCUPADO=false;if(!ok)return;try{await api(`/api/obra/${encodeURIComponent(OBRA)}/quitar`,{method:'POST',body:JSON.stringify({proveedor:p})});abrirObra(OBRA)}catch(e){aviso(e.message,1)}}
+let SOLO_OF=null;
 function pintarComp(){const d=DATOS,P=d.proveedores.map(p=>p.nombre);
- let h=`<div class="fila" style="margin-bottom:6px"><input type="text" id="filtro" placeholder="Filtrar por texto, código o capítulo" size="40" oninput="filtrar()">
+ const conOf=d.materiales.filter(m=>Object.keys(m.prov).length).length,total=d.materiales.length;
+ const soloOf=SOLO_OF===null?(P.length>0&&conOf<total/2):SOLO_OF;
+ const caps=[...new Set(d.materiales.filter(m=>Object.keys(m.prov).length).map(m=>m.cap))];
+ const resumenOf=P.length?`<div class="caja" style="margin:0 0 6px;padding:8px 12px"><b>${conOf} de ${total}</b> materiales tienen oferta de algún proveedor${conOf<total?` (capítulos ofertados: ${caps.slice(0,8).map(esc).join(', ')}${caps.length>8?'…':''}). El resto de partidas del cliente no las ha ofertado nadie${soloOf?' y están ocultas: desmarca "solo partidas con oferta" para verlas':''}.`:'.'}</div>`:'';
+ let h=`${resumenOf}<div class="fila" style="margin-bottom:6px"><input type="text" id="filtro" placeholder="Filtrar por texto, código o capítulo" size="40" oninput="filtrar()">
+ <label title="Oculta las partidas que ningún proveedor ha ofertado"><input type="checkbox" id="soloOf" onchange="SOLO_OF=this.checked;filtrar()" ${soloOf?'checked':''}> solo partidas con oferta</label>
  <label><input type="checkbox" id="soloAl" onchange="filtrar()"> solo con alertas</label><span class="peq">Verde = más barato · amarillo = casamiento a revisar · naranja = ofertan algo distinto. Pasa el ratón por encima para ver detalles.</span></div>
  <div class="tabla"><table id="tcomp"><thead><tr><th>Nº</th><th>Código</th><th>Partida del cliente</th><th>Material a comprar</th><th>Ud</th><th>Cant.</th><th>Precio cliente</th>
  ${P.map(p=>`<th>${esc(p)}<br>código</th><th>${esc(p)}<br>cant. ofertada</th><th>${esc(p)}<br>precio</th><th>${esc(p)}<br>importe</th>`).join('')}<th>Más bajo</th><th>P.U. más barato</th><th>× cantidad</th><th>BBDD</th><th>Alertas</th></tr></thead><tbody>`;
@@ -110,10 +116,13 @@ function pintarComp(){const d=DATOS,P=d.proveedores.map(p=>p.nombre);
    const ver=o.precio!=null&&min!=null&&Math.abs(o.precio-min)<1e-9?'verde':'';
    celdas+=`<td class="${cl}" title="${esc(o.desc)}\nPuntuación ${o.punt} · ${o.estado}">${esc(o.codigos)}</td><td class="num" title="${esc(o.dcant)}">${num(o.cant)}${o.dcant&&o.dcant!='='?`<div class="peq">${esc(o.dcant)}</div>`:''}</td><td class="num ${ver}">${eur(o.precio,4)}</td><td class="num ${ver}">${eur(o.importe)}</td>`}
   let bb='';if(m.bbdd){bb=`<span title="${esc(m.bbdd.ultimos.map(x=>`${x.prov}: ${x.precio} € (${x.fecha}, ${x.obra}) ${x.desc}`).join('\n'))}">${esc(m.bbdd.ultimos[0].prov)} ${eur(m.bbdd.ultimos[0].precio,4)}</span>`;if(m.bbdd.aviso){al.push('BBDD: '+m.bbdd.aviso);bb='<span class="verde">'+bb+'</span>'}}
-  h+=`<tr data-al="${al.length?1:0}" data-txt="${esc((m.codigo+' '+m.resumen+' '+m.material+' '+cap).toLowerCase())}"><td>${esc(m.id)}</td><td>${esc(m.codigo)}</td><td>${m.primero?esc(m.resumen):''}</td><td class="mat">${esc(m.material)}${m.nota?`<div class="peq">${esc(m.nota)}</div>`:''}</td><td>${esc(m.ud)}</td><td class="num">${num(m.cant)}</td><td class="num">${m.primero?eur(m.precio_cli):''}</td>${celdas}
+  h+=`<tr data-of="${Object.keys(m.prov).length?1:0}" data-al="${al.length?1:0}" data-txt="${esc((m.codigo+' '+m.resumen+' '+m.material+' '+cap).toLowerCase())}"><td>${esc(m.id)}</td><td>${esc(m.codigo)}</td><td>${m.primero?esc(m.resumen):''}</td><td class="mat">${esc(m.material)}${m.nota?`<div class="peq">${esc(m.nota)}</div>`:''}</td><td>${esc(m.ud)}</td><td class="num">${num(m.cant)}</td><td class="num">${m.primero?eur(m.precio_cli):''}</td>${celdas}
   <td>${esc(m.mejor.prov||'')}</td><td class="num">${eur(m.mejor.precio,4)}</td><td class="num">${eur(m.mejor.importe)}</td><td>${bb}</td><td class="alerta">${al.map(esc).join('<br>')}<div><button class="peq" onclick="anotar('${esc(m.id)}')" title="Enseñar a la app: anota una corrección o criterio para este material; se recordará en obras futuras">📝 Anotar caso</button></div></td></tr>`}
- h+='</tbody></table></div>';$('#cuerpo').innerHTML=h}
-function filtrar(){const t=$('#filtro').value.toLowerCase(),s=$('#soloAl').checked;document.querySelectorAll('#tcomp tbody tr').forEach(tr=>{if(tr.classList.contains('cap'))return;tr.classList.toggle('ocultar',(t&&!tr.dataset.txt.includes(t))||(s&&tr.dataset.al!='1'))})}
+ h+='</tbody></table></div>';$('#cuerpo').innerHTML=h;filtrar()}
+function filtrar(){const t=$('#filtro').value.toLowerCase(),s=$('#soloAl').checked,o=$('#soloOf').checked;let cap=null,visibles=0;
+ const cierra=()=>{if(cap)cap.classList.toggle('ocultar',visibles==0)};
+ document.querySelectorAll('#tcomp tbody tr').forEach(tr=>{if(tr.classList.contains('cap')){cierra();cap=tr;visibles=0;return}
+  const ocul=(t&&!tr.dataset.txt.includes(t))||(s&&tr.dataset.al!='1')||(o&&tr.dataset.of!='1');tr.classList.toggle('ocultar',ocul);if(!ocul)visibles++});cierra()}
 function pintarAlertas(){const d=DATOS;const filas=[];
  for(const m of d.materiales){m.alertas_cli.forEach(a=>filas.push(['media',m.id,m.codigo,'Cliente',a]));
   for(const [p,o] of Object.entries(m.prov)){o.alertas.forEach(a=>filas.push([a.g,m.id,m.codigo,p,a.t]))}
