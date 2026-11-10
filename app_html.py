@@ -59,25 +59,55 @@ async function crearObra(){const n=$('#nuevaObra').value.trim();if(!n)return avi
 async function abrirObra(id){OBRA=id;cargando(true,'Analizando la obra (la primera vez puede tardar si hay PDFs escaneados)…');
  try{DATOS=await api('/api/obra/'+encodeURIComponent(id))}catch(e){cargando(false);return aviso(e.message,1)}cargando(false);pintarObra()}
 function pintarObra(){const d=DATOS;$('#titulo').textContent='Obra: '+d.nombre;
+ if(d.pendiente_capitulos)return elegirCapitulos(true);
  const pest=[['comp','Comparativa'],['alert','Alertas'],['lineas','Líneas de proveedores'],['docs','Documentos']];
  let h=`<div class="fila"><div class="caja" style="flex:1">${docsCabecera(d)}</div></div>
  <div class="pestanas">${pest.map(([k,t])=>`<button class="${PEST==k?'act':''}" onclick="PEST='${k}';pintarObra()">${t}</button>`).join('')}
  <span style="flex:1"></span>${d.materiales?`<button class="prim" onclick="location.href='/api/obra/${encodeURIComponent(d.id)}/excel'">⬇ Descargar Excel</button>`:''}</div><div id="cuerpo"></div>`;
  $('#app').innerHTML=h;if(!d.materiales&&PEST!='docs'){PEST='docs'}
  ({comp:pintarComp,alert:pintarAlertas,lineas:pintarLineas,docs:pintarDocs})[PEST]()}
-function docsCabecera(d){let t=`<b>Cliente:</b> ${d.cliente?esc(d.cliente.archivo.split('/').pop()):'<span class="alerta">falta</span>'}`;
+function docsCabecera(d){const nf=(d.cliente_archivos||[]).length;let t=`<b>Cliente:</b> ${d.cliente?(nf>1?nf+' ficheros':esc(d.cliente.archivo.split('/').pop())):'<span class="alerta">falta</span>'}`;
  if(d.total_cliente!=null)t+=` · ${new Set(d.materiales.map(m=>m.n)).size} partidas · ${eur(d.total_cliente)}`;
- t+=' &nbsp; <b>Proveedores:</b> '+(d.proveedores.map(p=>{const x=d.totales&&d.totales[p.nombre];return `${esc(p.nombre)}${x?` (${x.cubiertos} materiales · ${eur(x.importe)})`:''}`}).join(' · ')||'ninguno');
+ t+=' &nbsp; <b>Proveedores:</b> '+(d.proveedores.map(p=>{const x=d.totales&&d.totales[p.nombre];return `${esc(p.nombre)}${p.n_ofertas>1?' ['+p.n_ofertas+' ofertas]':''}${x?` (${x.cubiertos} materiales · ${eur(x.importe)})`:''}`}).join(' · ')||'ninguno');
+ if(d.cliente)t+=` &nbsp; <button onclick="elegirCapitulos(false)" title="Elegir qué capítulos del presupuesto hacemos nosotros">📂 Capítulos que hacemos${d.capitulos?' ('+d.capitulos.length+')':''}</button>`;
  return t+` &nbsp; <button onclick="PEST='docs';pintarObra()">+ Añadir oferta</button>`}
-function pintarDocs(){const d=DATOS;$('#cuerpo').innerHTML=`
- <div class="caja"><h3 style="margin-top:0">1. Presupuesto del cliente</h3><div class="fila"><input type="file" id="fCli" accept=".bc3,.pdf,.xlsx,.xlsm"><button class="prim" onclick="subir('cliente')">${d.cliente?'Sustituir':'Subir'}</button></div>
- <div class="peq">BC3, PDF de "Presupuesto y mediciones" o Excel. Si lo sustituyes se borran las correcciones manuales.</div>${(d.avisos_cliente||[]).map(a=>`<div class="alerta">${esc(a)}</div>`).join('')}</div>
+let ARBOL=null;
+async function elegirCapitulos(primeraVez){cargando(true,'Leyendo los capítulos del presupuesto…');let j;try{j=await api(`/api/obra/${encodeURIComponent(OBRA)}/capitulos`)}catch(e){cargando(false);return aviso(e.message,1)}cargando(false);
+ ARBOL=j;OCUPADO=true;const sel=new Set(j.incluidos||[]);const todos=j.incluidos===null;
+ const fila=n=>`<div class="capfila" data-nivel="${n.nivel}" style="padding-left:${n.nivel*22}px"><label><input type="checkbox" class="capchk" data-clave="${esc(n.clave)}" ${todos||sel.has(n.clave)?'checked':''} onchange="marcarCap(this)">
+  <b>${esc(n.codigo)}</b> ${esc(n.titulo)}</label> <span class="peq">${n.partidas} partidas${j.total?' · '+eur(n.importe):''}</span></div>${n.hijos.map(fila).join('')}`;
+ $('#titulo').textContent='Obra: '+(DATOS?DATOS.nombre:OBRA);
+ $('#app').innerHTML=`<div class="caja"><h3 style="margin-top:0">${primeraVez?'Antes de procesar: ':''}¿Qué capítulos del presupuesto hacemos nosotros?</h3>
+ <p class="peq">Solo se compararán con las ofertas, se casarán y saldrán en el Excel las partidas de los capítulos marcados. Puedes cambiarlo cuando quieras con el botón "📂 Capítulos que hacemos" (añadir o quitar capítulos rehace la comparativa). Al marcar o desmarcar un capítulo se marcan o desmarcan sus subcapítulos.</p>
+ <div class="fila"><button onclick="todosCap(true)">Marcar todos</button><button onclick="todosCap(false)">Desmarcar todos</button><span id="capResumen" style="font-weight:bold"></span></div>
+ <div style="margin:10px 0;max-height:calc(100vh - 330px);overflow:auto;border:1px solid var(--borde);border-radius:6px;padding:8px">${j.arbol.map(fila).join('')}</div>
+ <div class="fila"><button class="prim" onclick="guardarCap()">✔ Guardar y procesar</button>${primeraVez?'':'<button onclick="OCUPADO=false;abrirObra(OBRA)">Cancelar</button>'}</div></div>`;resumenCap()}
+function marcarCap(chk){const f=chk.closest('.capfila');const nivel=+f.dataset.nivel;let el=f.nextElementSibling;
+ while(el&&+el.dataset.nivel>nivel){el.querySelector('.capchk').checked=chk.checked;el=el.nextElementSibling}resumenCap()}
+function todosCap(v){document.querySelectorAll('.capchk').forEach(c=>c.checked=v);resumenCap()}
+function resumenCap(){let n=0,imp=0;const rec=ns=>ns.forEach(x=>{const c=document.querySelector(`.capchk[data-clave="${CSS.escape(x.clave)}"]`);if(c&&c.checked){n+=x.propias;imp+=x.importe-x.hijos.reduce((a,h)=>a+h.importe,0)}rec(x.hijos)});rec(ARBOL.arbol);
+ $('#capResumen').textContent=`Seleccionado: ${n} partidas`+(ARBOL.total?` · ${eur(Math.round(imp*100)/100)} de ${eur(ARBOL.total)}`:' (el proyecto no trae precios)')}
+async function guardarCap(){const inc=[...document.querySelectorAll('.capchk')].filter(c=>c.checked).map(c=>c.dataset.clave);if(!inc.length)return aviso('Marca al menos un capítulo',1);
+ cargando(true,'Guardando y casando las ofertas con los capítulos elegidos…');try{await api(`/api/obra/${encodeURIComponent(OBRA)}/capitulos`,{method:'POST',body:JSON.stringify({incluidos:inc})});OCUPADO=false;PEST='comp';await abrirObra(OBRA)}catch(e){cargando(false);aviso(e.message,1)}}
+function pintarDocs(){const d=DATOS;const L=d.lineas||{};
+ const filasOf=[];for(const p of d.proveedores){const docs=(L[p.nombre]||{}).docs||[];for(const x of docs)filasOf.push([p.nombre,x])}
+ $('#cuerpo').innerHTML=`
+ <div class="caja"><h3 style="margin-top:0">1. Presupuesto / proyecto del cliente</h3>
+ ${(d.cliente_archivos||[]).length?`<table style="width:auto;margin-bottom:8px"><tr><th>Fichero del proyecto</th><th></th></tr>${d.cliente_archivos.map(a=>`<tr><td>${esc(a.archivo)}</td><td>${d.cliente_archivos.length>1?`<button onclick="quitarCli('${a.huella}','${esc(a.archivo)}')">Quitar</button>`:''}</td></tr>`).join('')}</table>`:''}
+ <div class="fila"><input type="file" id="fCli" multiple accept=".bc3,.pdf,.xlsx,.xlsm">
+ ${d.cliente?`<label><input type="radio" name="modoCli" value="anadir" checked> Añadir al proyecto actual (proyecto en varios ficheros)</label><label><input type="radio" name="modoCli" value="sustituir"> Sustituir todo el presupuesto</label>`:''}
+ <button class="prim" onclick="subir('cliente')">Subir</button></div>
+ <div class="peq">BC3, PDF de "Presupuesto y mediciones" o Excel (también varios Excel de un mismo proyecto: se unen por código). Después se elige qué capítulos hacemos. Sustituir todo borra las correcciones manuales.</div>${(d.avisos_cliente||[]).map(a=>`<div class="alerta">${esc(a)}</div>`).join('')}</div>
  <div class="caja"><h3 style="margin-top:0">2. Ofertas de proveedores (se pueden añadir en cualquier momento)</h3>
- <div class="fila"><input type="file" id="fProv" multiple accept=".pdf,.xlsx,.xlsm,.bc3"><input type="text" id="nProv" placeholder="Nombre del proveedor (opcional)"><button class="prim" onclick="subir('proveedor')">Añadir</button></div>
- <div class="peq">Si no pones nombre se deduce del documento. Una oferta nueva de un proveedor ya cargado sustituye a la anterior. Los PDF escaneados se leen con OCR (tarda unos segundos por página).</div>
- <table style="margin-top:8px"><tr><th>Proveedor</th><th>Añadida por</th><th>Fichero</th><th>Fecha oferta</th><th>Validez</th><th>Total documento</th><th>Suma leída</th><th>Avisos</th><th></th></tr>
- ${d.proveedores.map(p=>{const l=(d.lineas||{})[p.nombre]||{};return `<tr><td>${esc(p.nombre)}</td><td class="peq">${esc(p.usuario||'')}<br>${esc((p.anadida||'').replace('T',' ').slice(0,16))}</td><td>${esc(p.archivo)}</td><td>${esc(l.fecha)}</td><td>${esc(l.validez)}</td><td class="num">${eur(l.total_doc)}</td><td class="num ${l.total_doc!=null&&Math.abs(l.total_doc-l.suma)>0.05?'revisar':''}">${eur(l.suma)}</td><td class="alerta">${(l.avisos||[]).map(esc).join('<br>')}</td><td><button onclick="quitar('${esc(p.nombre)}')">Quitar</button></td></tr>`}).join('')}</table></div>
+ <div class="fila"><input type="file" id="fProv" multiple accept=".pdf,.xlsx,.xlsm,.bc3"><input type="text" id="nProv" placeholder="Proveedor (opcional)" list="listaProv"><datalist id="listaProv">${d.proveedores.map(p=>`<option value="${esc(p.nombre)}">`).join('')}</datalist>
+ <label title="Si no se marca, la oferta se AÑADE a las que ya hay de ese proveedor (p. ej. una oferta por capítulo)"><input type="checkbox" id="sustProv"> Sustituir las ofertas anteriores de este proveedor</label><button class="prim" onclick="subir('proveedor')">Añadir</button></div>
+ <div class="peq">Un proveedor puede tener <b>varias ofertas</b> (por ejemplo una por capítulo) o una sola para todo: se casan todas juntas con el presupuesto. Si escribes el nombre del proveedor se aplica a todos los ficheros seleccionados; si no, se deduce de cada documento. Los PDF escaneados se leen con OCR.</div>
+ <table style="margin-top:8px"><tr><th>Proveedor</th><th>Fichero</th><th>Añadida por</th><th>Fecha oferta</th><th>Validez</th><th>Líneas</th><th>Total documento</th><th>Suma leída</th><th>Avisos</th><th></th></tr>
+ ${filasOf.map(([p,x])=>`<tr><td>${esc(p)}</td><td>${esc(x.archivo)}</td><td class="peq">${esc(x.usuario||'')}<br>${esc((x.anadida||'').replace('T',' ').slice(0,16))}</td><td>${esc(x.fecha)}</td><td>${esc(x.validez)}</td><td class="num">${x.lineas}</td><td class="num">${eur(x.total_doc)}</td><td class="num ${x.total_doc!=null&&Math.abs(x.total_doc-x.suma)>0.05?'revisar':''}">${eur(x.suma)}</td><td class="alerta">${(x.avisos||[]).map(esc).join('<br>')}</td><td><button onclick="quitarOferta('${x.huella}','${esc(x.archivo)}')">Quitar</button></td></tr>`).join('')}</table>
+ ${d.proveedores.length&&!filasOf.length?'<p class="peq">Las ofertas se muestran aquí después de elegir los capítulos.</p>':''}</div>
  <div class="caja"><h3 style="margin-top:0">Historial (quién ha hecho qué)</h3>${(d.historial||[]).map(h=>`<div class="peq">${esc((h.cuando||'').replace('T',' '))} · <b>${esc(h.usuario||'')}</b> ${esc(h.detalle)}</div>`).join('')}</div>`}
+async function quitarOferta(h,nom){OCUPADO=true;const ok=confirm('¿Quitar la oferta '+nom+'?');OCUPADO=false;if(!ok)return;try{await api(`/api/obra/${encodeURIComponent(OBRA)}/quitar_oferta`,{method:'POST',body:JSON.stringify({huella:h})});abrirObra(OBRA)}catch(e){aviso(e.message,1)}}
+async function quitarCli(h,nom){OCUPADO=true;const ok=confirm('¿Quitar '+nom+' del proyecto del cliente?');OCUPADO=false;if(!ok)return;try{await api(`/api/obra/${encodeURIComponent(OBRA)}/quitar_cliente`,{method:'POST',body:JSON.stringify({huella:h})});abrirObra(OBRA)}catch(e){aviso(e.message,1)}}
 function verProgreso(on,titulo,fich){$('#progreso').style.display=on?'flex':'none';if(on){$('#progTitulo').textContent=titulo;$('#progFich').textContent=fich||'';
  $('#progPasos').innerHTML='';$('#progBarra').style.width='0';$('#progPct').textContent='0 %';$('#progTexto').textContent='Preparando…';$('#progTiempo').textContent=''}}
 function pintarProgreso(j){const pct=Math.round(j.fraccion*100);$('#progBarra').style.width=pct+'%';$('#progPct').textContent=pct+' %';
@@ -88,7 +118,10 @@ function enviar(url,fd,onSubida){return new Promise((ok,mal)=>{const x=new XMLHt
  x.onload=()=>{let j;try{j=JSON.parse(x.responseText)}catch(e){return mal(new Error('Respuesta no válida'))}if(x.status>=400||j.error)mal(new Error(j.error||x.status));else ok(j)};
  x.onerror=()=>mal(new Error('No se pudo enviar el fichero'));x.send(fd)})}
 async function subir(tipo){const inp=tipo=='cliente'?$('#fCli'):$('#fProv');if(!inp.files.length)return aviso('Elige un fichero',1);
- const fs=[...inp.files];const fd=new FormData();for(const f of fs)fd.append('fichero',f,f.name);if(tipo=='proveedor')fd.append('proveedor',$('#nProv').value);
+ const fs=[...inp.files];const fd=new FormData();for(const f of fs)fd.append('fichero',f,f.name);
+ if(tipo=='proveedor'){fd.append('proveedor',$('#nProv').value);fd.append('sustituir',$('#sustProv').checked?'1':'0')}
+ else{const m=document.querySelector('input[name=modoCli]:checked');fd.append('modo',m?m.value:'sustituir');
+  if(m&&m.value=='sustituir'){OCUPADO=true;const ok=confirm('Se sustituirá TODO el presupuesto del cliente y se borrarán las correcciones manuales. ¿Seguir?');OCUPADO=false;if(!ok)return}}
  const mb=fs.reduce((a,f)=>a+f.size,0)/1048576;OCUPADO=true;
  verProgreso(true,tipo=='cliente'?'Leyendo el presupuesto del cliente':'Leyendo '+(fs.length>1?fs.length+' ofertas':'la oferta'),fs.map(f=>f.name).join(' · ')+` (${mb.toFixed(1)} MB)`);
  try{const r=await enviar(`/api/obra/${encodeURIComponent(OBRA)}/${tipo}`,fd,f=>{$('#progBarra').style.width=Math.round(f*5)+'%';$('#progTexto').textContent=`Subiendo ${Math.round(f*100)} %…`});
@@ -107,7 +140,7 @@ function pintarComp(){const d=DATOS,P=d.proveedores.map(p=>p.nombre);
  <label title="Oculta las partidas que ningún proveedor ha ofertado"><input type="checkbox" id="soloOf" onchange="SOLO_OF=this.checked;filtrar()" ${soloOf?'checked':''}> solo partidas con oferta</label>
  <label><input type="checkbox" id="soloAl" onchange="filtrar()"> solo con alertas</label><span class="peq">Verde = más barato · amarillo = casamiento a revisar · naranja = ofertan algo distinto. Pasa el ratón por encima para ver detalles.</span></div>
  <div class="tabla"><table id="tcomp"><thead><tr><th>Nº</th><th>Código</th><th>Partida del cliente</th><th>Material a comprar</th><th>Ud</th><th>Cant.</th><th>Precio cliente</th>
- ${P.map(p=>`<th>${esc(p)}<br>código</th><th>${esc(p)}<br>cant. ofertada</th><th>${esc(p)}<br>precio</th><th>${esc(p)}<br>importe</th>`).join('')}<th>Más bajo</th><th>P.U. más barato</th><th>× cantidad</th><th>BBDD</th><th>Alertas</th></tr></thead><tbody>`;
+ ${P.map(p=>`<th>${esc(p)}<br>código</th><th>${esc(p)}<br>cant. ofertada</th><th>${esc(p)}<br>unitario</th><th>${esc(p)}<br>total</th>`).join('')}<th>Más bajo</th><th>P.U. más barato</th><th>× cantidad</th><th>BBDD</th><th>Alertas</th></tr></thead><tbody>`;
  let cap=null;for(const m of d.materiales){if(m.cap!==cap){cap=m.cap;h+=`<tr class="cap"><td colspan="${12+P.length*4}">${esc(cap)}</td></tr>`}
   const al=[...m.alertas_cli.map(a=>'CLIENTE: '+a),...(m.aprendido||[]).map(a=>'🧠 '+a)];let celdas='';
   const min=m.mejor.precio;
@@ -145,8 +178,8 @@ function pintarLineas(){const d=DATOS,P=Object.keys(d.lineas||{});if(!P.length){
  <div class="tabla"><table><tr><th>#</th><th>Sección</th><th>Código</th><th>Descripción del proveedor</th><th>Cant.</th><th>Precio neto</th><th>Dto</th><th>Importe</th><th>Casada con</th><th>Tipo</th><th></th></tr>
  ${L.map(l=>{const m=l.mat?mats[l.mat]:null;const cl=l.manual?'manual':(l.mat?(l.punt>=0.75?'seguro':'revisar'):'sin');
  return `<tr><td>${l.i+1}</td><td class="peq">${esc(l.seccion)}</td><td>${esc(l.codigo)}</td><td>${esc(l.desc)}${l.notas.length?`<div class="peq">${esc(l.notas.join('; '))}</div>`:''}</td><td class="num">${num(l.cant)}</td><td class="num">${eur(l.precio,4)}</td><td class="num">${l.dto??''}</td><td class="num">${eur(l.importe)}</td>
- <td><select data-i="${l.i}" onfocus="opciones(this)" onchange="fijar(${l.i},this.value)" style="max-width:420px"><option value="${esc(l.mat||'')}">${m?esc(m.id+' · '+m.codigo+' · '+m.material.slice(0,60)):'— sin casar —'}</option></select></td>
- <td><span class="chip ${cl}">${l.manual?'manual':(l.tipo||'sin casar')}${l.punt!=null&&!l.manual?' '+l.punt:''}</span></td><td>${l.manual?`<button onclick="deshacer(${l.i})" title="Volver a la propuesta automática">↺</button>`:''}</td></tr>`}).join('')}</table></div>`}
+ <td><select data-i="${l.i}" onfocus="opciones(this)" onchange="fijar('${l.uid}',this.value)" style="max-width:420px"><option value="${esc(l.mat||'')}">${m?esc(m.id+' · '+m.codigo+' · '+m.material.slice(0,60)):'— sin casar —'}</option></select></td>
+ <td><span class="chip ${cl}">${l.manual?'manual':(l.tipo||'sin casar')}${l.punt!=null&&!l.manual?' '+l.punt:''}</span></td><td>${l.manual?`<button onclick="deshacer('${l.uid}')" title="Volver a la propuesta automática">↺</button>`:''}</td></tr>`}).join('')}</table></div>`}
 function opciones(sel){if(sel._ok)return;sel._ok=1;const d=DATOS,l=d.lineas[PROVSEL].lineas.find(x=>x.i==sel.dataset.i);const actual=sel.value;
  const c=l.cands.map(x=>x.id);const fmt=m=>`${m.id} · ${m.codigo} · ${m.material.slice(0,70)}`;
  let h=`<option value="">— no casar —</option><optgroup label="Sugeridas">${c.map(id=>{const m=d.materiales.find(x=>x.id==id);return m?`<option value="${esc(id)}" ${id==actual?'selected':''}>${esc(fmt(m))}</option>`:''}).join('')}</optgroup><optgroup label="Todas las partidas">`;

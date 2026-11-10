@@ -14,6 +14,20 @@ PDF escaneado o Excel) —al principio o en cualquier momento— y la app:
    cuadran, potencias insuficientes…
 5. **Aprende**: las correcciones de emparejamiento y los "casos" que anotas se recuerdan para obras futuras.
 
+## Novedades de uso
+
+- **Capítulos que hacemos**: al subir el presupuesto del cliente la app pregunta qué capítulos hacemos nosotros; solo
+  esos se comparan, se casan y salen en el Excel (la numeración Nº licit. se mantiene). Se cambia cuando se quiera con
+  el botón "📂 Capítulos que hacemos".
+- **Proyecto en varios ficheros**: el presupuesto del cliente puede ser un BC3, un PDF o **varios Excel** (formato
+  "Orden · Designación · Cantidad · Precio"); se unen por código y los capítulos se deducen del código (08.02.22 → 08 >
+  08.02). Se pueden añadir ficheros más tarde ("Añadir al proyecto actual").
+- **Varias ofertas por proveedor**: p. ej. una por capítulo, o una sola para todo; se casan todas juntas. Al subir se
+  elige si se añade o si sustituye a las anteriores de ese proveedor.
+- Columnas del proveedor: **unitario** y **total**.
+- **Halógenos**: antes de avisar se deduce si lo ofertado lleva halógenos (designación Z1 = libre, V = PVC; AS/LSZH/LH;
+  CPR a1; marcas; PVC en tubos). Solo hay alerta grave si se confirma que los lleva.
+
 ## Instalar en Windows (sin instalar Python)
 
 1. En GitHub: pestaña **Actions** → flujo **"Instalador Windows"** → última ejecución en verde → sección

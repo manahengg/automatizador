@@ -11,6 +11,7 @@ Asignación:
     4. El resto queda "sin casar" (el proveedor oferta algo que no está en el presupuesto o no se ha reconocido).
 Las correcciones manuales (fijadas por la persona) mandan siempre.
 """
+import collections
 import dataclasses
 import re
 
@@ -92,6 +93,9 @@ SINONIMOS = {'tapa': 'cubierta', 'conmutado': 'conmutador', 'schuco': 'schuko', 
 def _tokens(texto):
     n = E.norm(texto)
     n = re.sub(r'[^a-z0-9.,/+-]+', ' ', n)
+    # el OCR pega palabras ('downl.kombic 100red.1500ip43'): se separa también por puntos y cambios letra/número
+    n = re.sub(r'(?<=[a-z])\.(?=[a-z0-9])|(?<=\d)\.(?=[a-z])', ' ', n)
+    n = re.sub(r'(?<=[a-z]{2})(?=\d)|(?<=\d)(?=[a-z]{2})', ' ', n)
     out = set()
     for t in n.split():
         t = t.strip('.,')
@@ -134,6 +138,36 @@ def materiales_cliente(doc):
     return out
 
 
+def clave_capitulo(codigos, titulos):
+    """Identificador estable de un capítulo: la ruta de códigos (o títulos si no tiene código)."""
+    return ' / '.join((c or t or '').strip() for c, t in zip(codigos, titulos))
+
+
+def clave_material_cap(m):
+    return clave_capitulo(m.ruta_codigos, m.ruta)
+
+
+def arbol_capitulos(doc):
+    """Árbol de capítulos del presupuesto del cliente para elegir cuáles hacemos.
+    [{'clave', 'codigo', 'titulo', 'nivel', 'partidas' (propias y de subcapítulos), 'importe', 'hijos': [...]}]"""
+    def nodo(cap, codigos, titulos, nivel):
+        cods, tits = codigos + [cap.codigo or ''], titulos + [cap.titulo]
+        hijos, n, imp = [], 0, 0.0
+        for h in cap.hijos:
+            if isinstance(h, Capitulo):
+                x = nodo(h, cods, tits, nivel + 1)
+                hijos.append(x)
+                n += x['partidas']
+                imp += x['importe']
+            else:
+                n += 1
+                imp += h.importe
+        return {'clave': clave_capitulo(cods, tits), 'codigo': (cap.codigo or '').rstrip('#'), 'titulo': cap.titulo,
+                'nivel': nivel, 'partidas': n, 'importe': round(imp, 2), 'hijos': hijos,
+                'propias': sum(1 for h in cap.hijos if not isinstance(h, Capitulo))}
+    return [nodo(c, [], [], 0) for c in doc.capitulos]
+
+
 def lineas_oferta(doc, proveedor):
     out = []
     for cap in doc.capitulos:
@@ -145,6 +179,19 @@ def lineas_oferta(doc, proveedor):
 
 
 # ------------------------------------------------------------------------------------------- puntuación
+_IDF, _IDF_MAX = {}, 1.0
+
+
+def preparar_idf(materiales):
+    """Rareza de cada palabra en el presupuesto del cliente (log de N / nº de materiales que la contienen)."""
+    global _IDF, _IDF_MAX
+    import math
+    df = collections.Counter(t for m in materiales for t in m.tokens)
+    n = max(1, len(materiales))
+    _IDF = {t: math.log(1 + n / c) for t, c in df.items()}
+    _IDF_MAX = math.log(1 + n)
+
+
 def puntuar(l, m, conocidas=None):
     """0..~1.5. Cuanto más alto, más seguro que la línea l es el material m."""
     s = 0.0
@@ -175,8 +222,19 @@ def puntuar(l, m, conocidas=None):
     if tt and am.get('tipo_tubo'):
         s += 0.05 if tt & am['tipo_tubo'] else -0.03
     if l.tokens and m.tokens:
-        comun = len(l.tokens & m.tokens)
-        s += 0.3 * (0.6 * comun / max(1, min(len(l.tokens), 12)) + 0.4 * comun / max(1, len(l.tokens | m.tokens)) * 3)
+        comun = l.tokens & m.tokens
+        if _IDF:
+            # palabras raras en el presupuesto (nombres de modelo: KOMBIC, FIL45...) pesan mucho más que las comunes
+            peso_l = sum(_IDF.get(t, _IDF_MAX) for t in l.tokens) or 1.0
+            s += 0.45 * sum(_IDF.get(t, _IDF_MAX) for t in comun) / peso_l
+        else:
+            n_c = len(comun)
+            s += 0.3 * (0.6 * n_c / max(1, min(len(l.tokens), 12)) + 0.4 * n_c / max(1, len(l.tokens | m.tokens)) * 3)
+        # números de modelo (3+ cifras: 1400, 1960, 35558...): coincidir suma; si los hay en ambos y ninguno coincide, resta
+        nl = {t for t in l.tokens if t.isdigit() and len(t) >= 3}
+        nm = {t for t in m.tokens if t.isdigit() and len(t) >= 3}
+        if nl and nm:
+            s += 0.12 * len(nl & nm) / len(nl) if nl & nm else -0.12
     q1, q2 = l.partida.cantidad or 0, m.cantidad or 0
     if q1 and q2:
         r = q1 / q2
@@ -220,6 +278,7 @@ def emparejar(materiales, lineas, manuales=None, conocidas=None):
             asign.append(Asignacion(mid, l, tipo, 1.0, 'manual'))
             cubiertos.add(mid)
     normales = [l for l in lineas if l.i not in usadas and not l.es_canon]
+    preparar_idf(materiales)
     puntos = {}
     for l in normales:
         fila = []

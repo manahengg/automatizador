@@ -51,7 +51,7 @@ CENTRO = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
 FIJAS = ['Capítulo', 'Nº licit.', 'Código cliente', 'Descripción cliente (partida)', 'Material a comprar (interpretado)',
          'Ud', 'Cant. partida', 'Cant. material', 'Precio cliente', 'Importe cliente']
-BLOQUE = ['Código proveedor', 'Cant. ofertada', 'Cant. prov − cliente', 'Precio', 'Importe', 'Dif. vs cliente']
+BLOQUE = ['Código proveedor', 'Cant. ofertada', 'Cant. prov − cliente', 'Unitario', 'Total', 'Dif. vs cliente']
 FINALES = ['Más bajo', 'P.U. más barato', 'P.U. más barato × cant.', 'Mejor precio BBDD', 'Proveedor BBDD (fecha · obra)',
            'Alertas y observaciones']
 ANCHOS_FIJAS = [22, 6, 13, 42, 30, 5, 9, 10, 10, 12]
@@ -88,14 +88,17 @@ def escribir(res, ruta):
     # ---------------------------------------------------------------- cabecera
     ws['A1'] = 'Comparativa de ofertas — %s' % res.obra.nombre
     ws['A1'].font = F_TITULO
-    ws['A2'] = 'Presupuesto del cliente: %s  ·  %d partidas, %d materiales  ·  Generado el %s' % (
+    caps = res.obra.estado.get('capitulos')
+    ws['A2'] = 'Presupuesto del cliente: %s  ·  %d partidas, %d materiales%s  ·  Generado el %s' % (
         res.cliente.nombre or res.obra.estado['cliente']['archivo'], len({m.n for m in res.materiales}),
-        len(res.materiales), datetime.datetime.now().strftime('%d/%m/%Y %H:%M'))
+        len(res.materiales), ('  ·  Solo los capítulos que hacemos (%d de %d materiales del presupuesto)' % (
+            len(res.materiales), getattr(res.obra, 'total_materiales', len(res.materiales)))) if caps is not None else '',
+        datetime.datetime.now().strftime('%d/%m/%Y %H:%M'))
     ws['A2'].font = F_GRIS
-    ws['A3'] = ('Verde = precio/importe más bajo de la fila · Amarillo en el código = emparejamiento a revisar · '
+    ws['A3'] = ('Verde = unitario/total más bajo de la fila · Amarillo en el código = emparejamiento a revisar · '
                 'Naranja = el proveedor oferta algo distinto a lo pedido · "Cant. material" = cantidad real a comprar '
                 'interpretando la descripción (p. ej. 4x35 mm² unipolar x 27,5 m = 110 m) · '
-                'Dif. vs cliente = importe del cliente − importe del proveedor (positivo = margen)')
+                'Dif. vs cliente = importe del cliente − total del proveedor (positivo = margen)')
     ws['A3'].font = F_GRIS
     ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=min(ultima_col - 1, 16))
     ws.row_dimensions[3].height = 24
@@ -351,7 +354,7 @@ def _hoja_resumen(wb, res, grupos, c_ini, c_fin, f_ini, f_fin, c_capfila):
     ws['A2'].font = F_GRIS
     cab = ['Capítulo', 'Importe cliente']
     for pv in provs:
-        cab += ['%s · importe' % pv['nombre'], '%s · dif. vs cliente' % pv['nombre'], '%s · materiales ofertados' % pv['nombre']]
+        cab += ['%s · total' % pv['nombre'], '%s · dif. vs cliente' % pv['nombre'], '%s · materiales ofertados' % pv['nombre']]
     cab += ['Mejor combinación (P.U. más barato × cant.)', 'Materiales en el capítulo']
     r = 4
     for i, t in enumerate(cab, 1):
@@ -400,13 +403,16 @@ def _hoja_resumen(wb, res, grupos, c_ini, c_fin, f_ini, f_fin, c_capfila):
     for i, t in enumerate(cab2, 1):
         _cab(ws, r, i, t, R_CAB)
     for pv in provs:
+      for x in pv.get('docs') or [{'doc': pv['doc'], 'archivo': pv['archivo']}]:
         r += 1
-        d = pv['doc']
+        d = x['doc']
         suma = round(sum(p.importe_exacto for p in d.partidas() if p.precio is not None), 2)
         cuadra = '' if d.total_declarado is None else ('Sí' if abs(suma - d.total_declarado) <= 0.05 else
                                                          'NO (dif. %.2f €)' % (suma - d.total_declarado))
-        vals = [pv['nombre'], pv['archivo'].split('/')[-1], d.fecha, d.validez, len(pv['lineas']),
-                len(pv['lineas']) - len(pv['sin']), len(pv['sin']), d.total_declarado, suma, cuadra,
+        lineas_doc = [l for l in pv['lineas'] if getattr(l, 'huella', x.get('huella')) == x.get('huella')]
+        sin_doc = [l for l in pv['sin'] if getattr(l, 'huella', x.get('huella')) == x.get('huella')]
+        vals = [pv['nombre'], x['archivo'].split('/')[-1], d.fecha, d.validez, len(lineas_doc),
+                len(lineas_doc) - len(sin_doc), len(sin_doc), d.total_declarado, suma, cuadra,
                 '\n'.join(a.texto for a in d.avisos if a.nivel != 'info' and 'importe calculado' not in a.texto)[:1500]]
         for i, v in enumerate(vals, 1):
             cel = ws.cell(r, i, v)
