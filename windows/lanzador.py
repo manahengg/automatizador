@@ -1,4 +1,5 @@
-"""Punto de entrada del ejecutable de Windows (ComparadorOfertas.exe).
+"""Punto de entrada de la app instalada en Windows. El acceso directo ejecuta, con el Python embebido oficial (firmado):
+    python\\python.exe app\\automatizador\\windows\\lanzador.py
 
 - Guarda obras y base de datos de precios en %LOCALAPPDATA%\\ComparadorOfertas (sobreviven a reinstalar/actualizar).
 - Usa el puerto 8765 o, si está ocupado, el primero libre.

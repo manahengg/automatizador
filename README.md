@@ -35,8 +35,14 @@ PDF escaneado o Excel) —al principio o en cualquier momento— y la app:
 2. Ejecuta el instalador (no pide permisos de administrador). Crea el acceso directo **"Comparador de ofertas"**.
 3. Al abrirlo aparece una ventana negra (es el servidor; no la cierres mientras uses la app) y se abre el navegador.
 
+**Por qué no hay un .exe propio:** Windows 11 (Smart App Control / Control de aplicaciones) bloquea los ejecutables
+sin firma digital (error *"CreateProcess falló; código 4551"*). El instalador pone el **Python embebido oficial de
+python.org, firmado**, con las librerías tal cual se publican en PyPI, y el código de la app en ficheros `.py`; el acceso
+directo abre ese `python.exe` con la app (`windows/empaquetar.py`). La solución definitiva para que tampoco el
+instalador pueda bloquearse es firmarlo con un certificado de firma de código de la empresa.
+
 Los datos (obras y `precios.db`) se guardan en `%LOCALAPPDATA%\ComparadorOfertas` y **no se borran** al desinstalar
-o actualizar. Para compartir la base de datos entre equipos basta con copiar esa carpeta.
+o actualizar.
 
 ## Trabajo en equipo con SharePoint (compartido y en tiempo real)
 
@@ -90,7 +96,7 @@ python -m automatizador bbdd "1x35 rz1-k"
 | Equipo | `compartido.py` | Configuración (carpeta compartida, usuario) y eventos: escribir sin modificar nunca un fichero, leer en orden. La app vigila la carpeta cada 3 s y avisa a los navegadores. |
 | Excel | `exportadores/excel_comparativa.py` | Hojas Comparativa, Resumen, Alertas, Líneas proveedores y BBDD precios. Todo con fórmulas; el verde es formato condicional. |
 | App | `app_web.py`, `app_html.py` | Servidor local (solo 127.0.0.1, los ficheros no salen del ordenador). |
-| Windows | `windows/`, `.github/workflows/windows.yml` | PyInstaller + Inno Setup construidos en GitHub Actions. |
+| Windows | `windows/`, `.github/workflows/windows.yml` | Python embebido oficial + Inno Setup, construido y probado en GitHub Actions. |
 
 ### Cómo aprende
 
