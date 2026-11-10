@@ -21,11 +21,32 @@ def puerto_libre(preferido=8765):
     raise SystemExit('No hay ningún puerto libre entre 8765 y 8799.')
 
 
+LIBRERIAS = [('pdfplumber', 'leer PDF'), ('openpyxl', 'crear el Excel'), ('pypdfium2', 'OCR de PDF escaneados'),
+             ('numpy', 'OCR de PDF escaneados'), ('rapidocr_onnxruntime', 'OCR de PDF escaneados')]
+
+
+def comprobar_librerias():
+    """Si Windows (Smart App Control) bloquea alguna DLL de una librería, lo dice claramente en vez de fallar luego."""
+    import importlib
+    malas = []
+    for mod, para in LIBRERIAS:
+        try:
+            importlib.import_module(mod)
+        except Exception as e:  # ImportError / OSError "DLL load failed" / bloqueo de directiva
+            malas.append((mod, para, str(e).splitlines()[0][:160] if str(e) else type(e).__name__))
+    for mod, para, err in malas:
+        print('AVISO: no se pudo cargar %s (sirve para %s): %s' % (mod, para, err))
+    if malas:
+        print('Si el error habla de "directiva de Control de aplicaciones" o "4551", Windows ha bloqueado esa DLL.'
+              '\nLa app se abre igual; lo demás funciona.\n')
+
+
 def main():
     base = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')
     os.environ.setdefault('AUTOMATIZADOR_DATOS', os.path.join(base, 'ComparadorOfertas'))
     if os.name == 'nt':
         os.system('title Comparador de ofertas - NO CIERRES ESTA VENTANA mientras uses la app')
+    comprobar_librerias()
     from automatizador.app_web import servir
     print('Comparador de ofertas de material eléctrico')
     print('Para cerrar la app cierra esta ventana.\n')
