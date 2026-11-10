@@ -92,7 +92,7 @@ def main():
     d = pedir(O)
     docs = d['lineas']['Electrofil']['docs']
     comprobar(len(docs) == 2, 'un proveedor con dos ofertas (se añaden, no se sustituyen)')
-    comprobar(len(d['materiales']) == 45, 'materiales del presupuesto: %d' % len(d['materiales']))
+    comprobar(len(d['materiales']) == 49, 'materiales del presupuesto (43 partidas, 6 desglosadas): %d' % len(d['materiales']))
     lineas = d['lineas']['Electrofil']['lineas']
     libre = next(l for l in lineas if not l['mat'] and l['precio'] is not None)
     destino = d['materiales'][5]['id']

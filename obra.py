@@ -37,13 +37,19 @@ def clave_mat(m):
     return '%s%s' % ((m.codigo or '').strip(), m.id[len(str(m.n)):])
 
 
+def _n_linea(linea):
+    """Número de línea legible (1, 2...) de un identificador 'huella:nº' o de un número de versiones anteriores."""
+    t = str(linea if linea is not None else 0).split(':')[-1]
+    return int(t) + 1 if t.isdigit() else t
+
+
 def _describir(tipo, d):
     return {'crear': 'creó la obra', 'cliente': 'subió el presupuesto del cliente %s' % d.get('archivo', '').split('/')[-1],
             'proveedor': '%s la oferta %s de %s' % ('añadió' if d.get('modo') == 'anadir' else 'subió (sustituyendo)',
                                                     d.get('archivo', '').split('/')[-1], d.get('nombre')), 'quitar': 'quitó la oferta de %s' % d.get('nombre'),
-            'fijar': 'casó la línea %s de %s con %s' % ((d.get('linea') or 0) + 1, d.get('proveedor'),
+            'fijar': 'casó la línea %s de %s con %s' % (_n_linea(d.get('linea')), d.get('proveedor'),
                                                         d.get('material') or '(sin casar)'),
-            'deshacer': 'deshizo la corrección de la línea %s de %s' % ((d.get('linea') or 0) + 1, d.get('proveedor')),
+            'deshacer': 'deshizo la corrección de la línea %s de %s' % (_n_linea(d.get('linea')), d.get('proveedor')),
             'capitulos': 'eligió los capítulos que hacemos (%d)' % len(d.get('incluidos') or []),
             'cliente_anadir': 'añadió al presupuesto del cliente %s' % ', '.join(
                 x['archivo'].split('/')[-1] for x in d.get('archivos') or []),
