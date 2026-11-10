@@ -57,7 +57,7 @@ def leer(ruta):
                     cap.hijos.append(nodo(h, f, r))
             return cap
         return Partida(descripcion=textos.get(codigo) or c['resumen'], cantidad=round(factor * rend, 3),
-                       precio=c['precio'], unidad=c['unidad'] or 'ud', codigo=codigo)
+                       precio=c['precio'], unidad=c['unidad'] or 'ud', codigo=codigo, resumen=c['resumen'])
 
     sueltas = []
     for h, f, r in hijos.get(raiz, []):

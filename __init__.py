@@ -1,2 +1,2 @@
-"""Automatizador de documentos de licitación para m4PRO."""
-__version__ = '0.1.0'
+"""Comparador de ofertas de material eléctrico: licitación del cliente frente a ofertas de proveedores."""
+__version__ = "1.0.0"

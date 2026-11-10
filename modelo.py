@@ -27,12 +27,17 @@ class Partida:
     importe_declarado: Optional[float] = None   # lo que imprime el documento, para contrastar
     notas: List[str] = field(default_factory=list)
     referencia: Optional[str] = None   # referencia/código de producto del proveedor, si la trae (ayuda a emparejar)
+    resumen: str = ''                  # título corto de la partida (presupuestos de cliente)
+    marca: Optional[str] = None        # fabricante, si la oferta lo indica en columna aparte
+    opcional: bool = False             # línea marcada OPCIONAL: se registra el precio pero no suma
+    canon_de: Optional['Partida'] = field(default=None, repr=False, compare=False)   # canon RAEE: línea a la que acompaña
 
     def __post_init__(self):
         self.descripcion = reparar_mojibake(self.descripcion) or ''
         self.unidad = reparar_mojibake(self.unidad) or 'ud'
         self.codigo = reparar_mojibake(self.codigo) if self.codigo else self.codigo
         self.referencia = reparar_mojibake(self.referencia) if self.referencia else self.referencia
+        self.resumen = reparar_mojibake(self.resumen) or ''
         self.notas = [reparar_mojibake(x) for x in (self.notas or [])]
 
     @property

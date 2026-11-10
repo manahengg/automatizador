@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+automatizador_datos/
+build/
+dist/
+*.spec.bak
