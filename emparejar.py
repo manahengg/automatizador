@@ -264,7 +264,13 @@ def emparejar(materiales, lineas, manuales=None, conocidas=None):
         sig = next((mat_por_linea[j] for j in range(l.i + 1, l.i + 6) if j in mat_por_linea), None)
         elegido = None
         fam = l.atributos.get('familia')
-        if mejor and (mejor[0] >= UMBRAL_COMPLEMENTO or
+        if prev and sig and partida_de.get(prev) == partida_de.get(sig):
+            # entre dos líneas de la misma partida: va con ellas si es compatible (bases y placas de un puesto)
+            cand = [x for x in (prev, sig) if E.compatibles(fam, por_id[x].atributos.get('familia'))
+                    and not _choca(por_id[x], l)]
+            if cand:
+                elegido = (puntuar(l, por_id[cand[0]], conocidas), cand[0])
+        if not elegido and mejor and (mejor[0] >= UMBRAL_COMPLEMENTO or
                       mejor[0] >= 0.33 and fam and fam == por_id[mejor[1]].atributos.get('familia')) \
                 and not _choca(por_id[mejor[1]], l):
             elegido = mejor
@@ -301,6 +307,10 @@ def emparejar(materiales, lineas, manuales=None, conocidas=None):
             hecho.add(l.i)
     sin = [l for l in lineas if l.i not in hecho and not (l.i in usadas and manuales.get(l.i))]
     return asign, sin, puntos
+
+
+def _parecida(a, b):
+    return bool(a and b) and 0.8 <= a / b <= 1.25
 
 
 def _choca(m, l):
@@ -406,6 +416,15 @@ def construir_ofertas(materiales, asignaciones):
         pri = lista[0]
         if pri.tipo == 'canon':
             continue
+        # principal = la línea de la misma familia que el material con más importe (la bandeja, no su tapa)
+        fam_m = m.atributos.get('familia')
+        mismas = [a for a in lista if a.tipo != 'canon' and a.linea.atributos.get('familia') == fam_m
+                  and a.linea.partida.precio is not None and not a.linea.partida.opcional
+                  and _parecida(a.linea.partida.cantidad, pri.linea.partida.cantidad)]
+        if len(mismas) > 1 and pri.origen != 'manual':
+            pri = max(mismas, key=lambda a: a.linea.partida.importe_exacto)
+            lista.remove(pri)
+            lista.insert(0, pri)
         ppal = pri.linea
         extras = [a.linea for a in lista[1:]]
         o = Oferta(principal=ppal, extras=extras, puntuacion=pri.puntuacion,
