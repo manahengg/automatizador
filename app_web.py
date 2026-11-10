@@ -19,11 +19,14 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 import traceback
+import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
+from . import compartido as C
 from . import emparejar as M
 from .app_html import PAGINA
 from .bbdd import BBDD
@@ -53,18 +56,27 @@ def parsear_multipart(content_type, cuerpo):
             for p in msg.iter_parts()]
 
 
+VERSION = {'n': 0, 'cambios': [], 'conocimiento': 0}   # contador de cambios que ven los navegadores
+
+
+def _avisar_cambio(obra, texto, usuario=None):
+    VERSION['n'] += 1
+    VERSION['cambios'].append({'v': VERSION['n'], 'obra': obra, 'texto': texto, 'usuario': usuario})
+    del VERSION['cambios'][:-200]
+
+
 def _marca(o):
-    ficheros = [os.path.join(o.carpeta, 'estado.json')]
-    return tuple(os.path.getmtime(f) for f in ficheros if os.path.exists(f))
+    return (o.marca(), VERSION['conocimiento'])
 
 
-def analisis(o, forzar=False):
+def analisis(o, forzar=False, progreso=None):
     with BLOQUEO:
+        o.recargar()
         m = _marca(o)
         c = _CACHE.get(o.ident)
         if c and c[0] == m and not forzar:
             return c[1]
-        r = o.analizar(db())
+        r = o.analizar(db(), progreso=progreso)
         _CACHE[o.ident] = (m, r)
         return r
 
@@ -73,11 +85,29 @@ def _n(x, d=2):
     return None if x is None else round(x, d)
 
 
+def llevar_obras_locales():
+    """Copia a la carpeta compartida las obras creadas antes en este PC (sin borrar las locales)."""
+    base_local = os.path.join(C.carpeta_local(), 'obras')
+    if not C.compartida_activa() or not os.path.isdir(base_local):
+        return 0
+    n = 0
+    for d in os.listdir(base_local):
+        origen = os.path.join(base_local, d)
+        destino = os.path.join(Obra.base(), d)
+        if not os.path.isdir(origen) or os.path.exists(destino):
+            continue
+        shutil.copytree(origen, destino, ignore=shutil.ignore_patterns('cache', '*.xlsx', '~$*'))
+        Obra(destino)                                  # migra estado.json a eventos si hace falta
+        n += 1
+    return n
+
+
 def datos_obra(o):
     e = o.estado
-    base = {'id': o.ident, 'nombre': o.nombre, 'cliente': e.get('cliente'),
-            'proveedores': [{'nombre': p['nombre'], 'archivo': os.path.basename(p['archivo']), 'anadida': p.get('anadida')}
-                            for p in e['proveedores']]}
+    base = {'id': o.ident, 'nombre': o.nombre, 'cliente': e.get('cliente'), 'version': VERSION['n'],
+            'proveedores': [{'nombre': p['nombre'], 'archivo': os.path.basename(p['archivo']), 'anadida': p.get('anadida'),
+                             'usuario': p.get('usuario')} for p in e['proveedores']],
+            'historial': e['historial'][-40:][::-1]}
     if not e.get('cliente'):
         return base
     r = analisis(o)
@@ -128,6 +158,133 @@ def datos_obra(o):
     base.update(materiales=mats, lineas=lineas, total_cliente=total_cli, totales=totales,
                 cliente_nombre=r.cliente.nombre, avisos_cliente=[a.texto for a in r.cliente.avisos if a.nivel != 'info'])
     return base
+
+
+TRABAJOS = {}          # id -> Trabajo (subidas en curso, para la barra de progreso)
+
+
+class Trabajo:
+    """Una subida que se procesa en segundo plano y va contando por dónde va."""
+
+    def __init__(self, titulo):
+        self.id = uuid.uuid4().hex
+        self.titulo = titulo
+        self.inicio = time.time()
+        self.estado = 'trabajando'           # trabajando | listo | error
+        self.texto = 'Preparando…'
+        self.fraccion = 0.0
+        self.pasos = []                       # [{'texto', 'seg'}] pasos terminados
+        self._t_paso = time.time()
+        self.mensaje = ''
+        TRABAJOS[self.id] = self
+        for k in [k for k, t in TRABAJOS.items() if time.time() - t.inicio > 3600]:
+            TRABAJOS.pop(k, None)
+
+    def paso(self, texto, fraccion=None):
+        if texto != self.texto:
+            if self.texto and not self.texto.startswith('Preparando'):
+                self.pasos.append({'texto': self.texto, 'seg': round(time.time() - self._t_paso, 1)})
+                del self.pasos[:-40]
+            self.texto, self._t_paso = texto, time.time()
+        if fraccion is not None:
+            self.fraccion = max(self.fraccion, min(1.0, fraccion))
+
+    def tramo(self, desde, hasta, prefijo=''):
+        """Callback de progreso de un documento que ocupa [desde, hasta] de la barra total."""
+        def cb(texto, frac=None):
+            self.paso(prefijo + texto, None if frac is None else desde + (hasta - desde) * frac)
+        return cb
+
+    def json(self):
+        return {'id': self.id, 'titulo': self.titulo, 'estado': self.estado, 'texto': self.texto,
+                'fraccion': round(self.fraccion, 3), 'pasos': self.pasos, 'mensaje': self.mensaje,
+                'segundos': round(time.time() - self.inicio), 'seg_paso': round(time.time() - self._t_paso)}
+
+
+def procesar_subida(trabajo, o, accion, ficheros, campos, carpeta_tmp):
+    """Lee los documentos subidos, analiza la obra y deja el resultado en el trabajo (hilo aparte)."""
+    hechos = []
+    n = len(ficheros)
+    try:
+        with BLOQUEO:
+            for k, (nombre_f, ruta_tmp) in enumerate(ficheros):
+                pre = '%s · ' % nombre_f if n > 1 else ''
+                cb = trabajo.tramo(0.85 * k / n, 0.85 * (k + 1) / n, pre)
+                cb('Abriendo el documento…', 0)
+                if accion == 'cliente':
+                    d = o.poner_cliente(ruta_tmp, nombre_f, progreso=cb)
+                    hechos.append('Presupuesto del cliente: %d partidas, %s €' % (
+                        sum(1 for _ in d.partidas()), ('%.2f' % d.importe).replace('.', ',')))
+                else:
+                    nombre_prov = (campos.get('proveedor') or '').strip() if n == 1 else ''
+                    prov, d = o.anadir_proveedor(ruta_tmp, nombre_prov or None, nombre_f, progreso=cb)
+                    hechos.append('%s: %d líneas leídas' % (prov, sum(1 for _ in d.partidas())))
+                cb('Leído: ' + hechos[-1], 1.0)
+            if o.estado.get('cliente'):
+                cb = trabajo.tramo(0.85, 1.0)
+                cb('Casando ofertas con el presupuesto y consultando la base de datos de precios…', 0.1)
+                analisis(o, progreso=lambda t, f=None: cb(t, 0.5))
+        trabajo.paso('Terminado', 1.0)
+        trabajo.mensaje = ' · '.join(hechos)
+        trabajo.estado = 'listo'
+    except (ValueError, OSError) as e:
+        trabajo.estado, trabajo.mensaje = 'error', str(e)
+    except Exception as e:
+        traceback.print_exc()
+        trabajo.estado, trabajo.mensaje = 'error', 'Fallo inesperado (%s: %s).' % (type(e).__name__, e)
+    finally:
+        shutil.rmtree(carpeta_tmp, ignore_errors=True)
+
+
+class Sincronizador(threading.Thread):
+    """Vigila la carpeta compartida: conocimiento nuevo de los compañeros y obras que han cambiado.
+    Lo que cambia se vuelve a analizar (y sus precios entran en la BBDD local) y se avisa a los navegadores."""
+    INTERVALO = 3.0
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.marcas = {}
+        self.parar = threading.Event()
+
+    def run(self):
+        while not self.parar.is_set():
+            try:
+                self.vuelta()
+            except Exception:
+                traceback.print_exc()
+            self.parar.wait(self.INTERVALO)
+
+    def vuelta(self):
+        yo = C.usuario()
+        with BLOQUEO:
+            nuevos = db().importar_conocimiento()
+        if nuevos:
+            VERSION['conocimiento'] += 1
+            for ev in nuevos:
+                if ev.get('usuario') != yo:
+                    _avisar_cambio(None, '%s %s' % (ev.get('usuario'), 'anotó un caso' if ev['tipo'] == 'caso' else
+                                                     'enseñó una equivalencia' if ev['tipo'] == 'equivalencia' else
+                                                     'olvidó un caso'), ev.get('usuario'))
+        for o in Obra.listar():
+            m = o.marca()
+            anterior = self.marcas.get(o.ident)
+            if anterior == m:
+                continue
+            self.marcas[o.ident] = m
+            if not o.estado.get('cliente'):
+                if anterior is not None:
+                    _avisar_cambio(o.ident, 'Cambios en %s' % o.nombre)
+                continue
+            try:
+                analisis(o)                               # lee (caché compartida), empareja y alimenta la BBDD local
+            except Exception as e:
+                print('No se pudo analizar la obra %s: %s' % (o.nombre, e))
+                continue
+            if anterior is not None:
+                ult = o.estado['historial'][-1] if o.estado['historial'] else {}
+                quien = ult.get('usuario')
+                _avisar_cambio(o.ident, '%s: %s %s' % (o.nombre, quien or '', ult.get('detalle') or 'cambios'),
+                               quien if quien != yo else None)
 
 
 def servir(puerto=8765, abrir=True):
@@ -184,12 +341,32 @@ def servir(puerto=8765, abrir=True):
             m = re.fullmatch(r'/api/obra/([^/]+)/excel', ruta)
             if m:
                 return self._proteger(lambda: self._excel(Obra.abrir(m.group(1))))
+            m = re.fullmatch(r'/api/trabajo/([0-9a-f]{32})', ruta)
+            if m:
+                t = TRABAJOS.get(m.group(1))
+                return self._json(t.json()) if t else self._error(404, 'Trabajo desconocido.')
+            if ruta == '/api/cambios':
+                desde = int((q.get('v') or ['0'])[0] or 0)
+                return self._json({'v': VERSION['n'], 'cambios': [c for c in VERSION['cambios'] if c['v'] > desde],
+                                   'usuario': C.usuario()})
+            if ruta == '/api/config':
+                c = C.config()
+                return self._json({'carpeta_compartida': c['carpeta_compartida'], 'usuario': c['usuario'],
+                                   'activa': C.compartida_activa(), 'en_uso': C.carpeta_compartida(),
+                                   'local': C.carpeta_local(), 'sugerencias': C.sugerencias_carpeta(),
+                                   'obras_locales': self._obras_locales()})
             if ruta == '/api/casos':
                 return self._proteger(lambda: self._json(db().casos()))
             if ruta == '/api/bbdd':
                 texto = (q.get('q') or [''])[0]
                 return self._proteger(lambda: self._json({'resumen': db().resumen(), 'filas': db().buscar(texto)}))
             self._error(404, 'No encontrado.')
+
+        def _obras_locales(self):
+            base = os.path.join(C.carpeta_local(), 'obras')
+            if not C.compartida_activa() or not os.path.isdir(base):
+                return []
+            return sorted(d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d)))
 
         def _excel(self, o):
             with BLOQUEO:
@@ -200,7 +377,6 @@ def servir(puerto=8765, abrir=True):
                     excel_comparativa.escribir(r, tmp)
                     with open(tmp, 'rb') as f:
                         datos = f.read()
-                    shutil.copy2(tmp, os.path.join(o.carpeta, 'comparativa_%s.xlsx' % o.ident))
                 finally:
                     os.remove(tmp)
             nombre = 'comparativa_%s.xlsx' % re.sub(r'[^\w.-]+', '_', o.ident)
@@ -219,6 +395,24 @@ def servir(puerto=8765, abrir=True):
 
         def do_POST(self):
             ruta = unquote(urlparse(self.path).path)
+            if ruta == '/api/config':
+                def cfg():
+                    d = self._json_cuerpo()
+                    with BLOQUEO:
+                        C.guardar_config(d.get('carpeta_compartida'), d.get('usuario'))
+                        _CACHE.clear()
+                        VERSION['conocimiento'] += 1
+                        db().importar_conocimiento()
+                    _avisar_cambio(None, 'Configuración cambiada')
+                    self._json({'ok': True})
+                return self._proteger(cfg)
+            if ruta == '/api/config/llevar_obras':
+                def llevar():
+                    with BLOQUEO:
+                        n = llevar_obras_locales()
+                    _avisar_cambio(None, 'Obras locales copiadas a la carpeta compartida')
+                    self._json({'ok': True, 'mensaje': '%d obras copiadas a la carpeta compartida' % n})
+                return self._proteger(llevar)
             if ruta == '/api/casos/borrar':
                 def borrar():
                     db().borrar_caso(int(self._json_cuerpo()['id']))
@@ -240,25 +434,21 @@ def servir(puerto=8765, abrir=True):
                 if accion in ('cliente', 'proveedor'):
                     partes = parsear_multipart(self.headers.get('Content-Type', ''), self._cuerpo())
                     campos = {k: v.decode('utf-8', 'replace') for k, f, v in partes if not f}
-                    ficheros = [(f, v) for k, f, v in partes if f and v]
-                    if not ficheros:
+                    recibidos = [(f, v) for k, f, v in partes if f and v]
+                    if not recibidos:
                         raise ValueError('No se ha recibido ningún fichero.')
-                    hechos = []
-                    with BLOQUEO, tempfile.TemporaryDirectory() as tmp:
-                        for nombre_f, datos in ficheros:
-                            nombre_f = os.path.basename(nombre_f.replace('\\', '/'))
-                            ruta_tmp = os.path.join(tmp, nombre_f)
-                            with open(ruta_tmp, 'wb') as fh:
-                                fh.write(datos)
-                            if accion == 'cliente':
-                                d = o.poner_cliente(ruta_tmp, nombre_f)
-                                hechos.append('Presupuesto del cliente: %d partidas, %.2f €' % (
-                                    sum(1 for _ in d.partidas()), d.importe))
-                            else:
-                                nombre_prov = (campos.get('proveedor') or '').strip() if len(ficheros) == 1 else ''
-                                prov, d = o.anadir_proveedor(ruta_tmp, nombre_prov or None, nombre_f)
-                                hechos.append('%s: %d líneas leídas' % (prov, sum(1 for _ in d.partidas())))
-                    return self._json({'ok': True, 'mensaje': ' · '.join(hechos)})
+                    tmp = tempfile.mkdtemp(prefix='subida_')
+                    ficheros = []
+                    for nombre_f, datos in recibidos:
+                        nombre_f = os.path.basename(nombre_f.replace('\\', '/'))
+                        ruta_tmp = os.path.join(tmp, nombre_f)
+                        with open(ruta_tmp, 'wb') as fh:
+                            fh.write(datos)
+                        ficheros.append((nombre_f, ruta_tmp))
+                    t = Trabajo(', '.join(f for f, _ in ficheros))
+                    threading.Thread(target=procesar_subida, args=(t, o, accion, ficheros, campos, tmp),
+                                     daemon=True).start()
+                    return self._json({'ok': True, 'trabajo': t.id})
                 datos = self._json_cuerpo()
                 with BLOQUEO:
                     if accion == 'quitar':
@@ -291,10 +481,15 @@ def servir(puerto=8765, abrir=True):
                 self._json({'ok': True})
             self._proteger(hacer)
 
+    sinc = Sincronizador()
+    sinc.start()
     srv = ThreadingHTTPServer(('127.0.0.1', puerto), Manejador)
     url = 'http://127.0.0.1:%d/' % puerto
     print('App abierta en %s  (Ctrl+C para cerrar)' % url)
-    print('Datos y base de datos de precios en:', os.path.dirname(ruta_bbdd()))
+    print('Base de datos local en:', os.path.dirname(ruta_bbdd()))
+    print('Carpeta de trabajo (obras):', C.carpeta_compartida(),
+          '(COMPARTIDA)' if C.compartida_activa() else '(solo este PC: configura una carpeta compartida en la app)')
+    print('Usuario:', C.usuario())
     if abrir:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:

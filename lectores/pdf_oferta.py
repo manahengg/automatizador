@@ -125,6 +125,8 @@ def _es_codigo(t):
 
 def leer(ruta, progreso=None):
     pags = P.paginas(ruta, progreso)
+    if progreso:
+        progreso('Interpretando la tabla de la oferta (columnas, cantidades, precios, descuentos)…', 0.97)
     proveedor = _adivinar_proveedor(ruta, pags)
     doc = Documento(tipo='oferta_proveedor', origen=str(ruta), proveedor=proveedor)
     if any(p['ocr'] for p in pags):
@@ -157,6 +159,8 @@ def leer(ruta, progreso=None):
             elif info['tipo'] == 'ancla':
                 info['seccion'] = seccion
                 if pag['ocr'] and not info['desc']:
+                    if progreso:
+                        progreso('Página %d: repitiendo el OCR de una descripción que no se leyó bien…' % (npag + 1), 0.97)
                     _rescatar_desc(ruta, npag, l, info, cols)
                 anclas_pag.append((l, info))
                 sueltas.append(('ancla', l, info))

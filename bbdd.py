@@ -10,10 +10,12 @@ Cómo se reconoce "el mismo material" entre ofertas/obras distintas (de más a m
   3. misma descripción de material del cliente a la que se casó en otra obra.
 """
 import datetime
+import json
 import os
 import re
 import sqlite3
 
+from . import compartido as C
 from . import electrico as E
 
 ESQUEMA = """
@@ -74,7 +76,12 @@ CREATE TABLE IF NOT EXISTS caso (
     oferta TEXT,                    -- lo que ofertó el proveedor (descripción)
     observacion TEXT NOT NULL,      -- la corrección/criterio de la persona
     cantidad_correcta REAL,
-    activo INTEGER DEFAULT 1
+    activo INTEGER DEFAULT 1,
+    uid TEXT,                       -- identificador del evento compartido
+    usuario TEXT
+);
+CREATE TABLE IF NOT EXISTS importado (
+    id TEXT PRIMARY KEY             -- eventos de la carpeta compartida ya aplicados en esta BBDD local
 );
 CREATE TABLE IF NOT EXISTS equivalencia (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -119,6 +126,11 @@ class BBDD:
         self.c.execute('PRAGMA foreign_keys = ON')
         self.c.create_function('REGEXP', 2, lambda patron, valor: bool(valor and re.search(patron, valor)))
         self.c.executescript(ESQUEMA)
+        for col in ('uid TEXT', 'usuario TEXT'):          # BBDD creadas con versiones anteriores
+            try:
+                self.c.execute('ALTER TABLE caso ADD COLUMN ' + col)
+            except sqlite3.OperationalError:
+                pass
 
     def cerrar(self):
         self.c.close()
@@ -168,9 +180,19 @@ class BBDD:
         self.c.commit()
         return len(filas)
 
+    def sincronizar_obra(self, obra, proveedores_vigentes, huellas_vigentes):
+        """Borra de la BBDD local las ofertas de una obra que ya no están (quitadas o sustituidas por otra persona)."""
+        vig = {p.lower() for p in proveedores_vigentes}
+        for r in self.c.execute('SELECT o.id, p.nombre, o.huella FROM oferta o JOIN obra b ON b.id=o.obra_id '
+                                'JOIN proveedor p ON p.id=o.proveedor_id WHERE b.nombre=?', (obra,)).fetchall():
+            if r['nombre'].lower() not in vig or r['huella'] not in huellas_vigentes:
+                self.c.execute('DELETE FROM precio WHERE oferta_id=?', (r['id'],))
+                self.c.execute('DELETE FROM oferta WHERE id=?', (r['id'],))
+        self.c.commit()
+
     def quitar_oferta(self, obra, proveedor):
         r = self.c.execute('SELECT o.id FROM oferta o JOIN obra b ON b.id=o.obra_id JOIN proveedor p ON p.id=o.proveedor_id '
-                           'WHERE b.nombre=? AND p.nombre=?', (obra, proveedor)).fetchall()
+                           'WHERE b.nombre=? AND p.nombre=? COLLATE NOCASE', (obra, proveedor)).fetchall()
         for x in r:
             self.c.execute('DELETE FROM precio WHERE oferta_id=?', (x['id'],))
             self.c.execute('DELETE FROM oferta WHERE id=?', (x['id'],))
@@ -178,18 +200,50 @@ class BBDD:
 
     # ------------------------------------------------------------------------------------------ aprendizaje
     def aprender(self, proveedor, linea, material):
-        """La persona ha casado a mano `linea` con `material`: se recuerda para las próximas ofertas."""
-        prov_id = self.proveedor_id(proveedor)
+        """La persona ha casado a mano `linea` con `material`: se recuerda (y se comparte) para próximas ofertas."""
         clave = cod(linea.referencia) or dnorm(linea.partida.descripcion)
         destinos = ['desc:' + dnorm(material.partida.resumen or material.descripcion)]
         if material.codigo:
             destinos.append('cli:' + cod(material.codigo))
         if material.clave:
             destinos.append(material.clave)
-        for d in destinos:
-            self.c.execute('INSERT OR IGNORE INTO equivalencia (proveedor_id, clave_linea, destino, creada) VALUES (?,?,?,?)',
-                           (prov_id, clave, d, ahora()))
+        ev = C.escribir_evento(self.dir_conocimiento(), 'equivalencia',
+                               {'proveedor': proveedor, 'clave_linea': clave, 'destinos': destinos})
+        self._aplicar(ev)
+
+    @staticmethod
+    def dir_conocimiento():
+        return os.path.join(C.carpeta_compartida(), 'conocimiento')
+
+    def _aplicar(self, ev):
+        """Aplica un evento de conocimiento (propio o de un compañero) a la BBDD local. Idempotente."""
+        if self.c.execute('SELECT 1 FROM importado WHERE id=?', (ev['id'],)).fetchone():
+            return False
+        d, t = ev['datos'], ev['tipo']
+        if t == 'equivalencia':
+            prov_id = self.proveedor_id(d['proveedor'])
+            for dest in d['destinos']:
+                self.c.execute('INSERT OR IGNORE INTO equivalencia (proveedor_id, clave_linea, destino, creada) '
+                               'VALUES (?,?,?,?)', (prov_id, d['clave_linea'], dest, ev['cuando']))
+        elif t == 'caso':
+            self.c.execute('INSERT INTO caso (creado, obra, proveedor, familia, clave_material, atributos, texto_material, '
+                           'oferta, observacion, cantidad_correcta, uid, usuario) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                           (ev['cuando'], d.get('obra'), d.get('proveedor'), d.get('familia'), d.get('clave_material'),
+                            d.get('atributos'), d.get('texto_material'), d.get('oferta'), d['observacion'],
+                            d.get('cantidad_correcta'), ev['id'], ev.get('usuario')))
+        elif t == 'caso_borrado':
+            self.c.execute('UPDATE caso SET activo=0 WHERE uid=?', (d['uid'],))
+        self.c.execute('INSERT OR IGNORE INTO importado (id) VALUES (?)', (ev['id'],))
         self.c.commit()
+        return True
+
+    def importar_conocimiento(self):
+        """Trae lo que han aprendido/anotado los compañeros. Devuelve [eventos nuevos]."""
+        nuevos = []
+        for ev in C.leer_eventos(self.dir_conocimiento()):
+            if ev.get('id') and self._aplicar(ev):
+                nuevos.append(ev)
+        return nuevos
 
     def conocidas(self):
         """{(proveedor en minúsculas, clave de línea): destino} para emparejar.puntuar."""
@@ -269,19 +323,23 @@ class BBDD:
         at = {k: (sorted(v) if isinstance(v, set) else v) for k, v in material.atributos.items()
               if k in ('familia', 'seccion', 'kwp', 'wp', 'potencia_w', 'lumenes', 'diametro', 'tipo_cable', 'fases',
                        'amperios', 'optica', 'temp_color')}
-        self.c.execute('INSERT INTO caso (creado, obra, proveedor, familia, clave_material, atributos, texto_material, '
-                       'oferta, observacion, cantidad_correcta) VALUES (?,?,?,?,?,?,?,?,?,?)',
-                       (ahora(), obra, proveedor or None, material.atributos.get('familia'), material.clave,
-                        json.dumps(at, ensure_ascii=False), E.norm(material.partida.resumen or material.descripcion),
-                        oferta, observacion.strip(), cantidad_correcta))
-        self.c.commit()
+        ev = C.escribir_evento(self.dir_conocimiento(), 'caso', {
+            'obra': obra, 'proveedor': proveedor or None, 'familia': material.atributos.get('familia'),
+            'clave_material': material.clave, 'atributos': json.dumps(at, ensure_ascii=False),
+            'texto_material': E.norm(material.partida.resumen or material.descripcion), 'oferta': oferta,
+            'observacion': observacion.strip(), 'cantidad_correcta': cantidad_correcta})
+        self._aplicar(ev)
 
     def casos(self):
         return [dict(r) for r in self.c.execute('SELECT * FROM caso WHERE activo=1 ORDER BY id DESC')]
 
     def borrar_caso(self, ident):
-        self.c.execute('UPDATE caso SET activo=0 WHERE id=?', (ident,))
-        self.c.commit()
+        r = self.c.execute('SELECT uid FROM caso WHERE id=?', (ident,)).fetchone()
+        if r and r['uid']:
+            self._aplicar(C.escribir_evento(self.dir_conocimiento(), 'caso_borrado', {'uid': r['uid']}))
+        else:
+            self.c.execute('UPDATE caso SET activo=0 WHERE id=?', (ident,))
+            self.c.commit()
 
     def casos_parecidos(self, material, todos=None):
         """Casos anteriores que se parecen a este material. Devuelve [(parecido 0..1, caso)]."""
