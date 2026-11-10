@@ -1,11 +1,10 @@
 """Una OBRA: el presupuesto del cliente + las ofertas de los proveedores que se van añadiendo + las correcciones.
 
-Carpeta de cada obra (dentro de <datos>/obras/<nombre>/):
+Carpeta de cada obra (dentro de <carpeta compartida>/obras/<nombre>/, ver compartido.py):
     cliente/<fichero>                  presupuesto o mediciones del cliente (BC3, PDF o Excel)
     proveedores/<Proveedor>/<fichero>  ofertas (PDF con texto o escaneado, Excel)
-    estado.json                        qué hay cargado y las correcciones manuales de emparejamiento
-    cache/<huella>.pkl                 lectura ya hecha de cada documento (el OCR solo se hace una vez)
-    comparativa_<obra>.xlsx            el Excel generado
+    eventos/*.json                     qué ha hecho cada persona (subir, añadir, quitar, corregir); el estado se deduce
+                                       de ellos, así varias personas pueden trabajar a la vez sin pisarse
 
 Se pueden añadir proveedores en cualquier momento: cada análisis se rehace con todo lo que haya.
 """
@@ -13,26 +12,33 @@ import datetime
 import hashlib
 import json
 import os
-import pickle
 import re
 import shutil
 
 from . import bbdd as B
+from . import compartido as C
+from .modelo import doc_a_dict, doc_de_dict
 from . import emparejar as M
 from .lectores import bc3, pdf_oferta, pdf_presupuesto
 
-VERSION_CACHE = 4
+VERSION_CACHE = 5
 
 
 def carpeta_datos():
-    d = os.environ.get('AUTOMATIZADOR_DATOS') or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                                               'automatizador_datos')
-    os.makedirs(d, exist_ok=True)
-    return d
+    return C.carpeta_local()
 
 
 def ruta_bbdd():
-    return os.path.join(carpeta_datos(), 'precios.db')
+    return os.path.join(C.carpeta_local(), 'precios.db')
+
+
+def _describir(tipo, d):
+    return {'crear': 'creó la obra', 'cliente': 'subió el presupuesto del cliente %s' % d.get('archivo', '').split('/')[-1],
+            'proveedor': 'añadió la oferta de %s' % d.get('nombre'), 'quitar': 'quitó la oferta de %s' % d.get('nombre'),
+            'fijar': 'casó la línea %s de %s con %s' % ((d.get('linea') or 0) + 1, d.get('proveedor'),
+                                                        d.get('material') or '(sin casar)'),
+            'deshacer': 'deshizo la corrección de la línea %s de %s' % ((d.get('linea') or 0) + 1, d.get('proveedor'))
+            }.get(tipo, tipo)
 
 
 def nombre_seguro(n):
@@ -84,43 +90,106 @@ def leer_oferta(ruta, progreso=None):
 
 
 class Obra:
+    """Estado = eventos de la carpeta eventos/ aplicados en orden (ver compartido.py)."""
+
     def __init__(self, carpeta):
         self.carpeta = carpeta
-        with open(os.path.join(carpeta, 'estado.json'), encoding='utf-8') as f:
-            self.estado = json.load(f)
-        self.estado.setdefault('proveedores', [])
-        self.estado.setdefault('manuales', {})
+        self._migrar_estado_json()
+        self.recargar()
+
+    # -------------------------------------------------------------------------------------- estado por eventos
+    @property
+    def dir_eventos(self):
+        return os.path.join(self.carpeta, 'eventos')
+
+    def recargar(self):
+        e = {'nombre': os.path.basename(self.carpeta), 'creada': None, 'cliente': None, 'proveedores': [],
+             'manuales': {}, 'historial': []}
+        for ev in C.leer_eventos(self.dir_eventos):
+            d, t = ev.get('datos') or {}, ev.get('tipo')
+            quien = ev.get('usuario')
+            if t == 'crear':
+                e['nombre'] = d.get('nombre') or e['nombre']
+                e['creada'] = e['creada'] or ev.get('cuando')
+            elif t == 'cliente':
+                e['cliente'] = {'archivo': d['archivo'], 'huella': d['huella'], 'usuario': quien, 'cuando': ev['cuando']}
+                e['manuales'] = {}                      # las correcciones dependían del presupuesto anterior
+            elif t == 'proveedor':
+                nom = d['nombre']
+                e['proveedores'] = [p for p in e['proveedores'] if p['nombre'].lower() != nom.lower()]
+                e['proveedores'].append({'nombre': nom, 'archivo': d['archivo'], 'huella': d['huella'],
+                                         'anadida': ev['cuando'], 'usuario': quien})
+                e['manuales'].pop(nom, None)
+            elif t == 'quitar':
+                e['proveedores'] = [p for p in e['proveedores'] if p['nombre'] != d['nombre']]
+                e['manuales'].pop(d['nombre'], None)
+            elif t == 'fijar':
+                e['manuales'].setdefault(d['proveedor'], {})[str(d['linea'])] = d.get('material')
+            elif t == 'deshacer':
+                e['manuales'].get(d['proveedor'], {}).pop(str(d['linea']), None)
+            e['historial'].append({'cuando': ev.get('cuando'), 'usuario': quien, 'tipo': t,
+                                   'detalle': _describir(t, d)})
+        self.estado = e
+
+    def _evento(self, tipo, datos):
+        C.escribir_evento(self.dir_eventos, tipo, datos)
+        self.recargar()
+
+    def marca(self):
+        """Cambia cuando cualquier persona toca la obra (eventos o documentos)."""
+        return C.marca_carpeta(self.dir_eventos)
+
+    def _migrar_estado_json(self):
+        """Obras creadas con la versión anterior (estado.json modificable) -> eventos."""
+        viejo = os.path.join(self.carpeta, 'estado.json')
+        if not os.path.exists(viejo) or os.path.isdir(self.dir_eventos):
+            return
+        with open(viejo, encoding='utf-8') as f:
+            e = json.load(f)
+        C.escribir_evento(self.dir_eventos, 'crear', {'nombre': e.get('nombre') or os.path.basename(self.carpeta)})
+        if e.get('cliente'):
+            C.escribir_evento(self.dir_eventos, 'cliente', e['cliente'])
+        for p in e.get('proveedores', []):
+            C.escribir_evento(self.dir_eventos, 'proveedor', {'nombre': p['nombre'], 'archivo': p['archivo'],
+                                                              'huella': p['huella']})
+        for prov, m in (e.get('manuales') or {}).items():
+            for li, mat in m.items():
+                C.escribir_evento(self.dir_eventos, 'fijar', {'proveedor': prov, 'linea': int(li), 'material': mat})
+        os.replace(viejo, viejo + '.migrado')
 
     # -------------------------------------------------------------------------------------- gestión
+    @staticmethod
+    def base():
+        return os.path.join(C.carpeta_compartida(), 'obras')
+
     @classmethod
     def crear(cls, nombre):
         nombre = nombre.strip()
         if not nombre:
             raise ValueError('La obra necesita un nombre.')
-        carpeta = os.path.join(carpeta_datos(), 'obras', nombre_seguro(nombre))
-        if os.path.exists(os.path.join(carpeta, 'estado.json')):
-            return cls(carpeta)
+        carpeta = os.path.join(cls.base(), nombre_seguro(nombre))
+        existe = os.path.isdir(os.path.join(carpeta, 'eventos')) or os.path.exists(os.path.join(carpeta, 'estado.json'))
         os.makedirs(carpeta, exist_ok=True)
-        with open(os.path.join(carpeta, 'estado.json'), 'w', encoding='utf-8') as f:
-            json.dump({'nombre': nombre, 'creada': B.ahora(), 'cliente': None, 'proveedores': [], 'manuales': {}},
-                      f, ensure_ascii=False, indent=1)
+        if not existe:
+            C.escribir_evento(os.path.join(carpeta, 'eventos'), 'crear', {'nombre': nombre})
         return cls(carpeta)
 
     @staticmethod
     def listar():
-        base = os.path.join(carpeta_datos(), 'obras')
+        base = Obra.base()
         if not os.path.isdir(base):
             return []
         out = []
         for d in sorted(os.listdir(base)):
-            if os.path.exists(os.path.join(base, d, 'estado.json')):
-                out.append(Obra(os.path.join(base, d)))
+            c = os.path.join(base, d)
+            if os.path.isdir(os.path.join(c, 'eventos')) or os.path.exists(os.path.join(c, 'estado.json')):
+                out.append(Obra(c))
         return out
 
     @staticmethod
     def abrir(ident):
-        c = os.path.join(carpeta_datos(), 'obras', nombre_seguro(ident))
-        if not os.path.exists(os.path.join(c, 'estado.json')):
+        c = os.path.join(Obra.base(), nombre_seguro(ident))
+        if not (os.path.isdir(os.path.join(c, 'eventos')) or os.path.exists(os.path.join(c, 'estado.json'))):
             raise ValueError('No existe la obra "%s".' % ident)
         return Obra(c)
 
@@ -132,90 +201,72 @@ class Obra:
     def ident(self):
         return os.path.basename(self.carpeta)
 
-    def guardar(self):
-        tmp = os.path.join(self.carpeta, 'estado.json.tmp')
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(self.estado, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, os.path.join(self.carpeta, 'estado.json'))
+    def _copiar(self, origen, subcarpeta, nombre_fichero):
+        """Copia un documento a la obra SIN sobrescribir nunca (si ya existe otro distinto, se le pone sufijo)."""
+        destino_dir = os.path.join(self.carpeta, subcarpeta)
+        os.makedirs(destino_dir, exist_ok=True)
+        base, ext = os.path.splitext(nombre_seguro(nombre_fichero))
+        h = huella(origen)
+        destino = os.path.join(destino_dir, base + ext)
+        k = 1
+        while os.path.exists(destino) and huella(destino) != h:
+            k += 1
+            destino = os.path.join(destino_dir, '%s_%d%s' % (base, k, ext))
+        if not os.path.exists(destino):
+            tmp = os.path.join(destino_dir, '~$' + os.path.basename(destino) + '.tmp')
+            shutil.copy2(origen, tmp)
+            os.replace(tmp, destino)
+        return destino, h
 
     def poner_cliente(self, ruta_origen, nombre_fichero=None, progreso=None):
-        destino_dir = os.path.join(self.carpeta, 'cliente')
-        shutil.rmtree(destino_dir, ignore_errors=True)
-        os.makedirs(destino_dir)
-        destino = os.path.join(destino_dir, nombre_fichero or os.path.basename(ruta_origen))
-        shutil.copy2(ruta_origen, destino)
-        doc = self._leer(destino, leer_cliente, progreso)          # falla aquí si no se puede leer
-        self.estado['cliente'] = {'archivo': os.path.relpath(destino, self.carpeta), 'huella': huella(destino)}
-        self.estado['manuales'] = {}                                # las correcciones dependían del presupuesto anterior
-        self.guardar()
+        doc = self._leer(ruta_origen, leer_cliente, progreso)           # falla aquí si no se puede leer
+        destino, h = self._copiar(ruta_origen, 'cliente', nombre_fichero or os.path.basename(ruta_origen))
+        self._evento('cliente', {'archivo': os.path.relpath(destino, self.carpeta).replace(os.sep, '/'), 'huella': h})
         return doc
 
     def anadir_proveedor(self, ruta_origen, proveedor=None, nombre_fichero=None, progreso=None):
         nombre_fichero = nombre_fichero or os.path.basename(ruta_origen)
-        tmp = os.path.join(self.carpeta, 'tmp_' + nombre_seguro(nombre_fichero))
-        shutil.copy2(ruta_origen, tmp)
-        try:
-            doc = self._leer(tmp, leer_oferta, progreso)
-        except Exception:
-            os.remove(tmp)
-            raise
+        doc = self._leer(ruta_origen, leer_oferta, progreso)
         proveedor = (proveedor or pdf_oferta.proveedor_por_carpeta(ruta_origen) or doc.proveedor or 'Proveedor').strip()
-        destino_dir = os.path.join(self.carpeta, 'proveedores', nombre_seguro(proveedor))
-        os.makedirs(destino_dir, exist_ok=True)
-        destino = os.path.join(destino_dir, nombre_seguro(nombre_fichero))
-        shutil.move(tmp, destino)
-        h = huella(destino)
-        # un proveedor = una oferta vigente por obra: la nueva sustituye a la anterior del mismo proveedor
-        anteriores = [p for p in self.estado['proveedores'] if p['nombre'].lower() == proveedor.lower()]
-        for p in anteriores:
-            if p['archivo'] != os.path.relpath(destino, self.carpeta):
-                try:
-                    os.remove(os.path.join(self.carpeta, p['archivo']))
-                except OSError:
-                    pass
-        self.estado['proveedores'] = [p for p in self.estado['proveedores'] if p['nombre'].lower() != proveedor.lower()]
-        self.estado['proveedores'].append({'nombre': proveedor, 'archivo': os.path.relpath(destino, self.carpeta),
-                                           'huella': h, 'anadida': B.ahora()})
-        self.estado['manuales'].pop(proveedor, None)
-        self.guardar()
+        destino, h = self._copiar(ruta_origen, os.path.join('proveedores', nombre_seguro(proveedor)), nombre_fichero)
+        # una oferta nueva de un proveedor ya cargado sustituye a la anterior (el fichero viejo se conserva)
+        self._evento('proveedor', {'nombre': proveedor, 'huella': h,
+                                   'archivo': os.path.relpath(destino, self.carpeta).replace(os.sep, '/')})
         return proveedor, doc
 
     def quitar_proveedor(self, proveedor, bbdd=None):
-        for p in self.estado['proveedores']:
-            if p['nombre'] == proveedor:
-                try:
-                    os.remove(os.path.join(self.carpeta, p['archivo']))
-                except OSError:
-                    pass
-        self.estado['proveedores'] = [p for p in self.estado['proveedores'] if p['nombre'] != proveedor]
-        self.estado['manuales'].pop(proveedor, None)
-        self.guardar()
+        self._evento('quitar', {'nombre': proveedor})
         if bbdd:
             bbdd.quitar_oferta(self.nombre, proveedor)
 
     def fijar(self, proveedor, linea, material_id):
         """Corrección manual: la línea nº `linea` del proveedor va a `material_id` ('' o None = no casar)."""
-        self.estado['manuales'].setdefault(proveedor, {})[str(linea)] = material_id or None
-        self.guardar()
+        self._evento('fijar', {'proveedor': proveedor, 'linea': int(linea), 'material': material_id or None})
 
     def deshacer(self, proveedor, linea):
-        self.estado['manuales'].get(proveedor, {}).pop(str(linea), None)
-        self.guardar()
+        self._evento('deshacer', {'proveedor': proveedor, 'linea': int(linea)})
 
     # -------------------------------------------------------------------------------------- caché de lecturas
     def _leer(self, ruta, lector, progreso=None):
+        """Lee un documento con caché COMPARTIDA (JSON, por huella): un escaneo se pasa por OCR una vez para todos."""
         h = huella(ruta)
-        cache = os.path.join(self.carpeta, 'cache', '%s_%s_v%d.pkl' % (lector.__name__, h, VERSION_CACHE))
+        dir_cache = os.path.join(C.carpeta_compartida(), 'cache')
+        cache = os.path.join(dir_cache, '%s_%s_v%d.json' % (lector.__name__, h, VERSION_CACHE))
         if os.path.exists(cache):
             try:
-                with open(cache, 'rb') as f:
-                    return pickle.load(f)
-            except Exception:
+                with open(cache, encoding='utf-8') as f:
+                    return doc_de_dict(json.load(f))
+            except (OSError, ValueError, KeyError, TypeError):
                 pass
         doc = lector(ruta, progreso)
-        os.makedirs(os.path.dirname(cache), exist_ok=True)
-        with open(cache, 'wb') as f:
-            pickle.dump(doc, f)
+        try:
+            os.makedirs(dir_cache, exist_ok=True)
+            tmp = os.path.join(dir_cache, '~$%s.tmp' % os.path.basename(cache))
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(doc_a_dict(doc), f, ensure_ascii=False)
+            os.replace(tmp, cache)
+        except OSError:
+            pass
         return doc
 
     # -------------------------------------------------------------------------------------- análisis
@@ -242,6 +293,7 @@ class Obra:
         if bbdd:
             avisar('Guardando precios en la base de datos y buscando precios históricos…')
             por_id = {m.id: m for m in materiales}
+            bbdd.sincronizar_obra(self.nombre, [p['nombre'] for p in provs], {p['huella'] for p in provs})
             for pv in provs:
                 asignado = {a.linea.i: por_id[a.material_id] for a in pv['asign'] if a.tipo == 'principal'}
                 bbdd.registrar_oferta(self.nombre, pv['nombre'], os.path.basename(pv['archivo']), pv['huella'],

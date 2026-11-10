@@ -142,3 +142,57 @@ class Documento:
                     self.avisar('revisar', 'La oferta caducó el %s: pedir al proveedor que la renueve.' % self.validez)
             except ValueError:
                 pass
+
+
+# ------------------------------------------------------------------------------------- JSON (caché compartida)
+_CAMPOS_PARTIDA = ('descripcion', 'cantidad', 'precio', 'unidad', 'codigo', 'precio_lista', 'dto_pct',
+                   'importe_declarado', 'notas', 'referencia', 'resumen', 'marca', 'opcional')
+
+
+def doc_a_dict(doc):
+    """Documento -> dict serializable en JSON (sin pickle: seguro para una carpeta compartida)."""
+    indices = {}
+
+    def cap(c):
+        hijos = []
+        for h in c.hijos:
+            if isinstance(h, Capitulo):
+                hijos.append({'cap': cap(h)})
+            else:
+                d = {k: getattr(h, k) for k in _CAMPOS_PARTIDA}
+                d['_n'] = indices.setdefault(id(h), len(indices))
+                d['_canon'] = indices.get(id(h.canon_de)) if h.canon_de is not None else None
+                hijos.append({'p': d})
+        return {'titulo': c.titulo, 'codigo': c.codigo, 'hijos': hijos}
+    return {'tipo': doc.tipo, 'origen': doc.origen, 'nombre': doc.nombre, 'proveedor': doc.proveedor,
+            'referencia': doc.referencia, 'fecha': doc.fecha, 'validez': doc.validez, 'condiciones': doc.condiciones,
+            'total_declarado': doc.total_declarado, 'avisos': [[a.nivel, a.texto] for a in doc.avisos],
+            'capitulos': [cap(c) for c in doc.capitulos]}
+
+
+def doc_de_dict(d):
+    por_n, canones = {}, []
+
+    def cap(x):
+        c = Capitulo(titulo=x['titulo'], codigo=x['codigo'])
+        for h in x['hijos']:
+            if 'cap' in h:
+                c.hijos.append(cap(h['cap']))
+            else:
+                p = h['p']
+                part = Partida(**{k: p.get(k) for k in _CAMPOS_PARTIDA if k in p})
+                part.opcional = bool(p.get('opcional'))
+                part.notas = list(p.get('notas') or [])
+                por_n[p['_n']] = part
+                if p.get('_canon') is not None:
+                    canones.append((part, p['_canon']))
+                c.hijos.append(part)
+        return c
+    doc = Documento(tipo=d['tipo'], origen=d['origen'], nombre=d.get('nombre') or '', proveedor=d.get('proveedor'),
+                    referencia=d.get('referencia'), fecha=d.get('fecha'), validez=d.get('validez'),
+                    condiciones=d.get('condiciones') or {}, total_declarado=d.get('total_declarado'))
+    doc.avisos = [Aviso(n, t) for n, t in d.get('avisos') or []]
+    doc.capitulos = [cap(c) for c in d['capitulos']]
+    for part, n in canones:
+        part.canon_de = por_n.get(n)
+    return doc

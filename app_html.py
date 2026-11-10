@@ -30,7 +30,7 @@ td.num{text-align:right;white-space:nowrap}tr.cap td{background:#d9e1f2;font-wei
 .mat{font-size:11px;color:#444}.resumen td{font-size:13px}
 </style></head><body>
 <header><h1 id="titulo">Comparador de ofertas de material eléctrico</h1>
-<button onclick="irInicio()">Obras</button><button onclick="irBBDD()">Base de datos de precios</button></header>
+<span id="compartido" class="peq" style="color:#fff"></span><button onclick="irInicio()">Obras</button><button onclick="irBBDD()">Base de datos de precios</button><button onclick="irConfig()">⚙ Configuración</button></header>
 <main id="app"></main><div id="msg"></div><div id="cargando"><div id="cargandoTxt">Trabajando…</div></div>
 <script>
 const $=s=>document.querySelector(s);let OBRA=null,DATOS=null,PEST='comp';
@@ -65,13 +65,14 @@ function pintarDocs(){const d=DATOS;$('#cuerpo').innerHTML=`
  <div class="caja"><h3 style="margin-top:0">2. Ofertas de proveedores (se pueden añadir en cualquier momento)</h3>
  <div class="fila"><input type="file" id="fProv" multiple accept=".pdf,.xlsx,.xlsm,.bc3"><input type="text" id="nProv" placeholder="Nombre del proveedor (opcional)"><button class="prim" onclick="subir('proveedor')">Añadir</button></div>
  <div class="peq">Si no pones nombre se deduce del documento. Una oferta nueva de un proveedor ya cargado sustituye a la anterior. Los PDF escaneados se leen con OCR (tarda unos segundos por página).</div>
- <table style="margin-top:8px"><tr><th>Proveedor</th><th>Fichero</th><th>Fecha oferta</th><th>Validez</th><th>Total documento</th><th>Suma leída</th><th>Avisos</th><th></th></tr>
- ${d.proveedores.map(p=>{const l=(d.lineas||{})[p.nombre]||{};return `<tr><td>${esc(p.nombre)}</td><td>${esc(p.archivo)}</td><td>${esc(l.fecha)}</td><td>${esc(l.validez)}</td><td class="num">${eur(l.total_doc)}</td><td class="num ${l.total_doc!=null&&Math.abs(l.total_doc-l.suma)>0.05?'revisar':''}">${eur(l.suma)}</td><td class="alerta">${(l.avisos||[]).map(esc).join('<br>')}</td><td><button onclick="quitar('${esc(p.nombre)}')">Quitar</button></td></tr>`}).join('')}</table></div>`}
+ <table style="margin-top:8px"><tr><th>Proveedor</th><th>Añadida por</th><th>Fichero</th><th>Fecha oferta</th><th>Validez</th><th>Total documento</th><th>Suma leída</th><th>Avisos</th><th></th></tr>
+ ${d.proveedores.map(p=>{const l=(d.lineas||{})[p.nombre]||{};return `<tr><td>${esc(p.nombre)}</td><td class="peq">${esc(p.usuario||'')}<br>${esc((p.anadida||'').replace('T',' ').slice(0,16))}</td><td>${esc(p.archivo)}</td><td>${esc(l.fecha)}</td><td>${esc(l.validez)}</td><td class="num">${eur(l.total_doc)}</td><td class="num ${l.total_doc!=null&&Math.abs(l.total_doc-l.suma)>0.05?'revisar':''}">${eur(l.suma)}</td><td class="alerta">${(l.avisos||[]).map(esc).join('<br>')}</td><td><button onclick="quitar('${esc(p.nombre)}')">Quitar</button></td></tr>`}).join('')}</table></div>
+ <div class="caja"><h3 style="margin-top:0">Historial (quién ha hecho qué)</h3>${(d.historial||[]).map(h=>`<div class="peq">${esc((h.cuando||'').replace('T',' '))} · <b>${esc(h.usuario||'')}</b> ${esc(h.detalle)}</div>`).join('')}</div>`}
 async function subir(tipo){const inp=tipo=='cliente'?$('#fCli'):$('#fProv');if(!inp.files.length)return aviso('Elige un fichero',1);
  const fd=new FormData();for(const f of inp.files)fd.append('fichero',f,f.name);if(tipo=='proveedor')fd.append('proveedor',$('#nProv').value);
  cargando(true,'Leyendo '+[...inp.files].map(f=>f.name).join(', ')+'…');
  try{const j=await api(`/api/obra/${encodeURIComponent(OBRA)}/${tipo}`,{method:'POST',body:fd});aviso(j.mensaje);PEST='comp';await abrirObra(OBRA)}catch(e){cargando(false);aviso(e.message,1)}}
-async function quitar(p){if(!confirm('¿Quitar la oferta de '+p+'?'))return;try{await api(`/api/obra/${encodeURIComponent(OBRA)}/quitar`,{method:'POST',body:JSON.stringify({proveedor:p})});abrirObra(OBRA)}catch(e){aviso(e.message,1)}}
+async function quitar(p){OCUPADO=true;const ok=confirm('¿Quitar la oferta de '+p+'?');OCUPADO=false;if(!ok)return;try{await api(`/api/obra/${encodeURIComponent(OBRA)}/quitar`,{method:'POST',body:JSON.stringify({proveedor:p})});abrirObra(OBRA)}catch(e){aviso(e.message,1)}}
 function pintarComp(){const d=DATOS,P=d.proveedores.map(p=>p.nombre);
  let h=`<div class="fila" style="margin-bottom:6px"><input type="text" id="filtro" placeholder="Filtrar por texto, código o capítulo" size="40" oninput="filtrar()">
  <label><input type="checkbox" id="soloAl" onchange="filtrar()"> solo con alertas</label><span class="peq">Verde = más barato · amarillo = casamiento a revisar · naranja = ofertan algo distinto. Pasa el ratón por encima para ver detalles.</span></div>
@@ -97,7 +98,8 @@ function pintarAlertas(){const d=DATOS;const filas=[];
  for(const [p,L] of Object.entries(d.lineas||{}))L.lineas.filter(l=>!l.mat&&l.precio!=null).forEach(l=>filas.push(['baja','','',p,`Línea ${l.i+1} sin casar: ${l.desc}`]));
  const o={alta:0,media:1,baja:2};filas.sort((a,b)=>o[a[0]]-o[b[0]]);
  $('#cuerpo').innerHTML=`<div class="tabla"><table><tr><th>Gravedad</th><th>Nº</th><th>Código</th><th>Origen</th><th>Detalle</th></tr>${filas.map(f=>`<tr><td class="${f[0]=='alta'?'alta':f[0]=='media'?'revisar':''}">${f[0]}</td><td>${esc(f[1])}</td><td>${esc(f[2])}</td><td>${esc(f[3])}</td><td>${esc(f[4])}</td></tr>`).join('')}</table></div>`}
-async function anotar(mid){const d=DATOS,m=d.materiales.find(x=>x.id==mid);const P=Object.keys(m.prov);
+async function anotar(mid){OCUPADO=true;try{await anotar2(mid)}finally{OCUPADO=false}}
+async function anotar2(mid){const d=DATOS,m=d.materiales.find(x=>x.id==mid);const P=Object.keys(m.prov);
  const obs=prompt(`Anotar caso para ${m.id} · ${m.codigo} · ${m.material}\n\nEscribe la corrección o el criterio (p. ej.: "Debería ser 10 módulos de 630 W: 21x460 W está sobredimensionado").\nSe recordará en obras futuras con materiales parecidos.`);if(!obs)return;
  let prov='';if(P.length){prov=prompt('¿A qué proveedor se refiere? ('+P.join(', ')+')\nDéjalo vacío si aplica a todos.','')||''}
  const cant=prompt('Cantidad correcta (opcional, déjalo vacío si no aplica):','')||'';
@@ -128,6 +130,27 @@ async function buscarBBDD(){const q=($('#qb')||{}).value||'';try{const j=await a
  let h='<div class="tabla"><table><tr><th>Material (clave técnica)</th><th>Proveedor</th><th>Precio neto</th><th>Fecha</th><th>Obra</th><th>Código</th><th>Descripción del proveedor</th><th>Cant.</th><th>Dto</th></tr>';
  for(const [k,fs] of Object.entries(grupos)){const min=Math.min(...fs.map(f=>f.precio_neto));fs.forEach((f,i)=>h+=`<tr>${i==0?`<td rowspan="${fs.length}"><b>${esc(k)}</b></td>`:''}<td>${esc(f.proveedor)}</td><td class="num ${f.precio_neto==min&&fs.length>1?'verde':''}">${eur(f.precio_neto,4)}</td><td>${esc(f.fecha)}</td><td>${esc(f.obra)}</td><td>${esc(f.codigo)}</td><td>${esc(f.descripcion)}</td><td class="num">${num(f.cantidad)}</td><td class="num">${f.dto??''}</td></tr>`)}
  $('#tb').innerHTML=h+'</table></div>'+(j.filas.length?'':'<p>Sin resultados.</p>')}catch(e){aviso(e.message,1)}}
-irInicio();
+let VER=0,OCUPADO=false;
+async function sondear(){try{const j=await api('/api/cambios?v='+VER);if(VER&&j.cambios.length){
+  const ajenos=j.cambios.filter(c=>c.usuario);if(ajenos.length)aviso('Actualizado: '+ajenos.map(c=>c.texto).join(' · '));
+  const enPantalla=document.activeElement&&['SELECT','INPUT','TEXTAREA'].includes(document.activeElement.tagName);
+  if(!OCUPADO&&!enPantalla&&$('#cargando').style.display!='flex'){
+   if(OBRA&&j.cambios.some(c=>c.obra==OBRA||c.obra===null))recargarObra();else if(!OBRA&&$('#nuevaObra'))irInicio()}}
+  VER=j.v}catch(e){}setTimeout(sondear,3000)}
+async function recargarObra(){try{const d=await api('/api/obra/'+encodeURIComponent(OBRA));DATOS=d;const sc=$('.tabla')?$('.tabla').scrollTop:0;pintarObra();if($('.tabla'))$('.tabla').scrollTop=sc}catch(e){}}
+async function estadoCompartido(){try{const c=await api('/api/config');$('#compartido').innerHTML=(c.activa?'🔗 Compartido':'💻 Solo este PC')+' · '+esc(c.usuario)}catch(e){}}
+async function irConfig(){OBRA=null;$('#titulo').textContent='Configuración';const c=await api('/api/config');
+ $('#app').innerHTML=`<div class="caja"><h3 style="margin-top:0">Trabajo en equipo (SharePoint / OneDrive)</h3>
+ <p>1. En SharePoint crea (o elige) una carpeta para la app, p. ej. <b>"Comparador de ofertas"</b>, y pulsa <b>Sincronizar</b> (o <b>Agregar acceso directo a Mis archivos</b>) para que aparezca en el Explorador de Windows.<br>
+ 2. Pega aquí su ruta (en el Explorador: clic derecho en la carpeta → <i>Copiar como ruta de acceso</i>). Todos los PCs deben apuntar a la misma carpeta de SharePoint.</p>
+ <div class="fila"><b>Carpeta compartida:</b><input type="text" id="cfgCarpeta" size="80" value="${esc(c.carpeta_compartida)}" placeholder="C:\\Users\\...\\Empresa\\Comparador de ofertas"></div>
+ ${c.sugerencias.length?`<div class="peq" style="margin:6px 0">Carpetas de OneDrive/SharePoint encontradas en este PC (clic para usarla):<br>${c.sugerencias.map(x=>`<a href="#" onclick="$('#cfgCarpeta').value=this.textContent;return false">${esc(x)}</a>`).join('<br>')}</div>`:''}
+ <div class="fila" style="margin-top:8px"><b>Tu nombre:</b><input type="text" id="cfgUsuario" value="${esc(c.usuario)}" size="30"><span class="peq">Aparece en el historial de cada obra y en los casos que anotes.</span></div>
+ <div class="fila" style="margin-top:10px"><button class="prim" onclick="guardarConfig()">Guardar</button><span class="peq">Estado: ${c.activa?'<b>compartido</b> — trabajando en '+esc(c.en_uso):'solo este PC ('+esc(c.en_uso)+')'}</span></div>
+ ${c.obras_locales.length?`<div class="caja" style="background:#fff8e5">Tienes ${c.obras_locales.length} obra(s) creadas antes solo en este PC (${c.obras_locales.map(esc).join(', ')}). <button onclick="llevarObras()">Copiarlas a la carpeta compartida</button></div>`:''}
+ <p class="peq">Cómo funciona: en la carpeta compartida nunca se modifica un fichero, solo se crean ficheros nuevos (uno por acción), así OneDrive no genera conflictos aunque varias personas trabajen a la vez en la misma obra. Cada PC mantiene su base de datos de precios local, que se completa sola con lo de todos. Base local: ${esc(c.local)}</p></div>`}
+async function guardarConfig(){cargando(true,'Guardando y sincronizando…');try{await api('/api/config',{method:'POST',body:JSON.stringify({carpeta_compartida:$('#cfgCarpeta').value,usuario:$('#cfgUsuario').value})});cargando(false);aviso('Configuración guardada');estadoCompartido();irConfig()}catch(e){cargando(false);aviso(e.message,1)}}
+async function llevarObras(){cargando(true);try{const j=await api('/api/config/llevar_obras',{method:'POST',body:'{}'});cargando(false);aviso(j.mensaje);irConfig()}catch(e){cargando(false);aviso(e.message,1)}}
+estadoCompartido();irInicio();sondear();
 </script></body></html>
 """
