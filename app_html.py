@@ -27,11 +27,21 @@ td.num{text-align:right;white-space:nowrap}tr.cap td{background:#d9e1f2;font-wei
 .fila{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.ocultar{display:none}
 #msg{position:fixed;bottom:14px;right:14px;max-width:520px;padding:10px 14px;border-radius:8px;background:var(--azul);color:#fff;display:none;z-index:9;white-space:pre-wrap}
 #msg.error{background:var(--rojo)}#cargando{position:fixed;inset:0;background:#fff8;display:none;align-items:center;justify-content:center;z-index:8;font-size:16px}
-.mat{font-size:11px;color:#444}.resumen td{font-size:13px}
+.mat{font-size:11px;color:#444}
+#progreso{position:fixed;inset:0;background:#0006;display:none;align-items:center;justify-content:center;z-index:10}
+#progreso .panel{background:#fff;border-radius:10px;padding:18px 22px;width:min(640px,92vw);box-shadow:0 8px 30px #0004}
+#progreso h3{margin:0 0 4px;font-size:15px}.barra{height:14px;background:#e8edf3;border-radius:7px;overflow:hidden;margin:10px 0 6px}
+.barra div{height:100%;background:linear-gradient(90deg,#2e75b6,#5b9bd5);width:0;transition:width .4s}
+#progAhora{font-weight:bold;margin:6px 0}#progPasos{max-height:190px;overflow:auto;font-size:12px;color:#555;border-top:1px solid #eee;margin-top:8px;padding-top:6px}
+#progPasos div:before{content:'✔ ';color:#548235}.gira{display:inline-block;animation:g 1s linear infinite}@keyframes g{to{transform:rotate(360deg)}}.resumen td{font-size:13px}
 </style></head><body>
 <header><h1 id="titulo">Comparador de ofertas de material eléctrico</h1>
 <span id="compartido" class="peq" style="color:#fff"></span><button onclick="irInicio()">Obras</button><button onclick="irBBDD()">Base de datos de precios</button><button onclick="irConfig()">⚙ Configuración</button></header>
 <main id="app"></main><div id="msg"></div><div id="cargando"><div id="cargandoTxt">Trabajando…</div></div>
+<div id="progreso"><div class="panel"><h3 id="progTitulo">Procesando</h3><div class="peq" id="progFich"></div>
+<div class="barra"><div id="progBarra"></div></div><div class="fila" style="justify-content:space-between"><span id="progPct">0 %</span><span class="peq" id="progTiempo"></span></div>
+<div id="progAhora"><span class="gira">⏳</span> <span id="progTexto">Preparando…</span></div><div id="progPasos"></div>
+<div class="peq" style="margin-top:8px">Los PDF escaneados tardan unos segundos por página (reconocimiento de texto). Puedes dejar esta ventana abierta; si otra persona ya leyó el mismo documento, se aprovecha su lectura.</div></div></div>
 <script>
 const $=s=>document.querySelector(s);let OBRA=null,DATOS=null,PEST='comp';
 const eur=(v,d=2)=>v==null?'':v.toLocaleString('es-ES',{minimumFractionDigits:d,maximumFractionDigits:d})+' €';
@@ -68,10 +78,24 @@ function pintarDocs(){const d=DATOS;$('#cuerpo').innerHTML=`
  <table style="margin-top:8px"><tr><th>Proveedor</th><th>Añadida por</th><th>Fichero</th><th>Fecha oferta</th><th>Validez</th><th>Total documento</th><th>Suma leída</th><th>Avisos</th><th></th></tr>
  ${d.proveedores.map(p=>{const l=(d.lineas||{})[p.nombre]||{};return `<tr><td>${esc(p.nombre)}</td><td class="peq">${esc(p.usuario||'')}<br>${esc((p.anadida||'').replace('T',' ').slice(0,16))}</td><td>${esc(p.archivo)}</td><td>${esc(l.fecha)}</td><td>${esc(l.validez)}</td><td class="num">${eur(l.total_doc)}</td><td class="num ${l.total_doc!=null&&Math.abs(l.total_doc-l.suma)>0.05?'revisar':''}">${eur(l.suma)}</td><td class="alerta">${(l.avisos||[]).map(esc).join('<br>')}</td><td><button onclick="quitar('${esc(p.nombre)}')">Quitar</button></td></tr>`}).join('')}</table></div>
  <div class="caja"><h3 style="margin-top:0">Historial (quién ha hecho qué)</h3>${(d.historial||[]).map(h=>`<div class="peq">${esc((h.cuando||'').replace('T',' '))} · <b>${esc(h.usuario||'')}</b> ${esc(h.detalle)}</div>`).join('')}</div>`}
+function verProgreso(on,titulo,fich){$('#progreso').style.display=on?'flex':'none';if(on){$('#progTitulo').textContent=titulo;$('#progFich').textContent=fich||'';
+ $('#progPasos').innerHTML='';$('#progBarra').style.width='0';$('#progPct').textContent='0 %';$('#progTexto').textContent='Preparando…';$('#progTiempo').textContent=''}}
+function pintarProgreso(j){const pct=Math.round(j.fraccion*100);$('#progBarra').style.width=pct+'%';$('#progPct').textContent=pct+' %';
+ $('#progTexto').textContent=j.texto+(j.seg_paso>=3?` (${j.seg_paso} s)`:'');$('#progTiempo').textContent='Tiempo: '+(j.segundos>=60?Math.floor(j.segundos/60)+' min '+j.segundos%60+' s':j.segundos+' s');
+ $('#progPasos').innerHTML=j.pasos.map(p=>`<div>${esc(p.texto)} <span class="peq">${p.seg>=1?'('+p.seg+' s)':''}</span></div>`).join('');$('#progPasos').scrollTop=1e6}
+function enviar(url,fd,onSubida){return new Promise((ok,mal)=>{const x=new XMLHttpRequest();x.open('POST',url);
+ x.upload.onprogress=e=>{if(e.lengthComputable)onSubida(e.loaded/e.total)};
+ x.onload=()=>{let j;try{j=JSON.parse(x.responseText)}catch(e){return mal(new Error('Respuesta no válida'))}if(x.status>=400||j.error)mal(new Error(j.error||x.status));else ok(j)};
+ x.onerror=()=>mal(new Error('No se pudo enviar el fichero'));x.send(fd)})}
 async function subir(tipo){const inp=tipo=='cliente'?$('#fCli'):$('#fProv');if(!inp.files.length)return aviso('Elige un fichero',1);
- const fd=new FormData();for(const f of inp.files)fd.append('fichero',f,f.name);if(tipo=='proveedor')fd.append('proveedor',$('#nProv').value);
- cargando(true,'Leyendo '+[...inp.files].map(f=>f.name).join(', ')+'…');
- try{const j=await api(`/api/obra/${encodeURIComponent(OBRA)}/${tipo}`,{method:'POST',body:fd});aviso(j.mensaje);PEST='comp';await abrirObra(OBRA)}catch(e){cargando(false);aviso(e.message,1)}}
+ const fs=[...inp.files];const fd=new FormData();for(const f of fs)fd.append('fichero',f,f.name);if(tipo=='proveedor')fd.append('proveedor',$('#nProv').value);
+ const mb=fs.reduce((a,f)=>a+f.size,0)/1048576;OCUPADO=true;
+ verProgreso(true,tipo=='cliente'?'Leyendo el presupuesto del cliente':'Leyendo '+(fs.length>1?fs.length+' ofertas':'la oferta'),fs.map(f=>f.name).join(' · ')+` (${mb.toFixed(1)} MB)`);
+ try{const r=await enviar(`/api/obra/${encodeURIComponent(OBRA)}/${tipo}`,fd,f=>{$('#progBarra').style.width=Math.round(f*5)+'%';$('#progTexto').textContent=`Subiendo ${Math.round(f*100)} %…`});
+  let j;do{await new Promise(z=>setTimeout(z,600));j=await api('/api/trabajo/'+r.trabajo);pintarProgreso(j)}while(j.estado=='trabajando');
+  if(j.estado=='error')throw new Error(j.mensaje);
+  await new Promise(z=>setTimeout(z,500));verProgreso(false);aviso(j.mensaje);PEST='comp';await abrirObra(OBRA)}
+ catch(e){verProgreso(false);aviso(e.message,1)}finally{OCUPADO=false}}
 async function quitar(p){OCUPADO=true;const ok=confirm('¿Quitar la oferta de '+p+'?');OCUPADO=false;if(!ok)return;try{await api(`/api/obra/${encodeURIComponent(OBRA)}/quitar`,{method:'POST',body:JSON.stringify({proveedor:p})});abrirObra(OBRA)}catch(e){aviso(e.message,1)}}
 function pintarComp(){const d=DATOS,P=d.proveedores.map(p=>p.nombre);
  let h=`<div class="fila" style="margin-bottom:6px"><input type="text" id="filtro" placeholder="Filtrar por texto, código o capítulo" size="40" oninput="filtrar()">

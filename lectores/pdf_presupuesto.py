@@ -41,6 +41,8 @@ def _es_subrayado(l):
 
 def leer(ruta, progreso=None):
     pags = P.paginas(ruta, progreso)
+    if progreso:
+        progreso('Interpretando capítulos, partidas y mediciones…', 0.97)
     lineas = []
     cols = None
     nombre = ''
