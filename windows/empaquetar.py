@@ -26,6 +26,20 @@ EXCLUIR = {'obras', 'tests', '__pycache__', '.git', '.github', 'build', 'dist', 
            'automatizador_datos'}
 
 
+LEEME = """COMPARADOR DE OFERTAS - instalación
+
+1. ANTES de descomprimir: clic derecho en el ZIP > Propiedades > marca "Desbloquear" > Aceptar.
+2. Descomprime el ZIP (clic derecho > Extraer todo).
+3. Doble clic en "Instalar.bat". Si sale "Windows protegió su PC": "Más información" > "Ejecutar de todas formas".
+4. Se crea el acceso directo "Comparador de ofertas" en el escritorio y en el menú Inicio, y se abre la app.
+   Se abre una ventana negra (es el servidor): no la cierres mientras uses la app.
+
+No hay ningún .exe propio: se usa el python.exe oficial de python.org (firmado) para que Smart App Control no lo
+bloquee. Tus obras y precios están en %LOCALAPPDATA%\\ComparadorOfertas y no se borran al actualizar.
+Para actualizar: descarga el ZIP nuevo y repite los pasos.
+"""
+
+
 def main(destino):
     destino = os.path.abspath(destino)
     shutil.rmtree(destino, ignore_errors=True)
@@ -49,6 +63,13 @@ def main(destino):
     # 4) código de la app
     shutil.copytree(REPO, dapp, ignore=lambda d, nombres: [n for n in nombres if n in EXCLUIR or n.endswith('.pyc')])
     shutil.copy2(os.path.join(REPO, 'windows', 'icono.ico'), os.path.join(destino, 'icono.ico'))
+    # 5) instalación sin .exe propio: Instalar.bat -> python.exe oficial + windows/instalar.py
+    for f in ('Instalar.bat', 'Abrir Comparador.bat'):
+        with open(os.path.join(REPO, 'windows', f), encoding='ascii') as e, \
+                open(os.path.join(destino, f), 'w', encoding='ascii', newline='\r\n') as s:
+            s.write(e.read())
+    with open(os.path.join(destino, 'LEEME.txt'), 'w', encoding='utf-8-sig', newline='\r\n') as f:
+        f.write(LEEME)
     print('Paquete listo en', destino)
 
 
