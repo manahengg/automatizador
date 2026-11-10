@@ -2,7 +2,7 @@
 
 PAGINA = r"""<!doctype html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Comparador de ofertas</title>
+<title>Comparador de ofertas</title><link rel="icon" type="image/png" href="__LOGO__">
 <style>
 :root{--azul:#1f4e78;--azul2:#2e75b6;--verde:#c6efce;--verdeT:#006100;--amar:#fff2cc;--nar:#f8cbad;--gris:#f3f4f6;--borde:#d9dde3;--txt:#1d232b;--rojo:#c00000}
 *{box-sizing:border-box}body{margin:0;font:13px/1.4 Arial,Helvetica,sans-serif;color:var(--txt);background:#fff}
@@ -35,7 +35,7 @@ td.num{text-align:right;white-space:nowrap}tr.cap td{background:#d9e1f2;font-wei
 #progAhora{font-weight:bold;margin:6px 0}#progPasos{max-height:190px;overflow:auto;font-size:12px;color:#555;border-top:1px solid #eee;margin-top:8px;padding-top:6px}
 #progPasos div:before{content:'✔ ';color:#548235}.gira{display:inline-block;animation:g 1s linear infinite}@keyframes g{to{transform:rotate(360deg)}}.resumen td{font-size:13px}
 </style></head><body>
-<header><h1 id="titulo">Comparador de ofertas de material eléctrico</h1>
+<header><img src="__LOGO__" alt="" style="height:38px;width:38px;background:#fff;border-radius:50%;padding:2px"><h1 id="titulo">Comparador de ofertas de material eléctrico</h1>
 <span id="compartido" class="peq" style="color:#fff"></span><button onclick="irInicio()">Obras</button><button onclick="irBBDD()">Base de datos de precios</button><button onclick="irConfig()">⚙ Configuración</button></header>
 <main id="app"></main><div id="msg"></div><div id="cargando"><div id="cargandoTxt">Trabajando…</div></div>
 <div id="progreso"><div class="panel"><h3 id="progTitulo">Procesando</h3><div class="peq" id="progFich"></div>

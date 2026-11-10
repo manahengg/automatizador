@@ -39,6 +39,23 @@ _CACHE = {}                         # id obra -> (marca, Resultado)
 _DB = None
 
 
+_LOGO = None
+
+
+def _logo_datos():
+    """Logo de la empresa incrustado en la página (data URI): funciona igual en el .exe y sin internet."""
+    global _LOGO
+    if _LOGO is None:
+        import base64
+        ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'recursos', 'logo_64.png')
+        try:
+            with open(ruta, 'rb') as f:
+                _LOGO = 'data:image/png;base64,' + base64.b64encode(f.read()).decode()
+        except OSError:
+            _LOGO = ''
+    return _LOGO
+
+
 def db():
     global _DB
     if _DB is None:
@@ -347,7 +364,7 @@ def servir(puerto=8765, abrir=True):
             ruta = unquote(u.path)
             q = parse_qs(u.query)
             if ruta == '/':
-                return self._enviar(200, PAGINA, 'text/html; charset=utf-8')
+                return self._enviar(200, PAGINA.replace('__LOGO__', _logo_datos()), 'text/html; charset=utf-8')
             if ruta == '/favicon.ico':
                 return self._enviar(204, b'', 'image/x-icon')
             if ruta == '/api/obras':

@@ -32,6 +32,10 @@ jobs:
         run: |
           python -m automatizador comparar "automatizador/obras/alburquerque/cliente/DOC20250604121822Pliego de prescripciones tecnicas.PDF.pdf" automatizador/obras/alburquerque/proveedores/electrofil/OFE_160_70922.pdf "automatizador/obras/alburquerque/proveedores/sonepar/SONEPAR  PRTºcentro empleo alburquerque.pdf" --obra prueba -o prueba.xlsx
 
+      - name: Prueba de la app de principio a fin (subir, elegir capítulos, corregir líneas, Excel)
+        shell: bash
+        run: python -m automatizador.tests.test_flujo
+
       - name: Ejecutable (PyInstaller)
         run: pyinstaller --noconfirm automatizador/windows/comparador.spec
 

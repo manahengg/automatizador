@@ -18,6 +18,8 @@ for paquete in ('rapidocr_onnxruntime', 'onnxruntime', 'pypdfium2', 'pypdfium2_r
     except Exception as e:
         print('aviso: no se pudo recoger', paquete, e)
 
+datas.append((os.path.join(REPO, 'recursos'), os.path.join('automatizador', 'recursos')))   # logo de la app y el Excel
+
 a = Analysis([os.path.join(REPO, 'windows', 'lanzador.py')], pathex=[PADRE], binaries=binaries, datas=datas,
              hiddenimports=ocultos, excludes=['tkinter', 'matplotlib', 'IPython', 'pytest', 'pandas'], noarchive=False)
 pyz = PYZ(a.pure)
