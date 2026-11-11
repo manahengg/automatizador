@@ -95,6 +95,14 @@ CREATE TABLE IF NOT EXISTS decision (
     activo INTEGER DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS ix_decision_mat ON decision(mat_key);
+CREATE TABLE IF NOT EXISTS partida_hist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    obra TEXT NOT NULL, mat_id TEXT, codigo TEXT, resumen TEXT, texto TEXT, familia TEXT, clave TEXT,
+    unidad TEXT, cantidad REAL, precio_cliente REAL,
+    mejor_proveedor TEXT, mejor_precio REAL, ofertas TEXT,   -- JSON {proveedor: precio}
+    actualizada TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_hist_obra ON partida_hist(obra);
 CREATE TABLE IF NOT EXISTS equivalencia (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     proveedor_id INTEGER NOT NULL REFERENCES proveedor(id),
@@ -404,6 +412,43 @@ class BBDD:
             if 200 <= wp <= 900:
                 out[(r['proveedor'], wp)] = dict(r, wp=wp)
         return list(out.values())
+
+    def registrar_partidas(self, obra, filas):
+        """Guarda las partidas de una obra (para 'partidas parecidas en obras anteriores'). Sustituye las anteriores."""
+        self.c.execute('DELETE FROM partida_hist WHERE obra=?', (obra,))
+        cols = ['obra', 'mat_id', 'codigo', 'resumen', 'texto', 'familia', 'clave', 'unidad', 'cantidad', 'precio_cliente',
+                'mejor_proveedor', 'mejor_precio', 'ofertas', 'actualizada']
+        self.c.executemany('INSERT INTO partida_hist (%s) VALUES (%s)' % (','.join(cols), ','.join('?' * len(cols))),
+                           [[obra] + [f.get(k) for k in cols[1:-1]] + [ahora()] for f in filas])
+        self.c.commit()
+
+    def partidas_hist(self, excluir_obra=None):
+        return [dict(r) for r in self.c.execute('SELECT * FROM partida_hist WHERE obra != ?', (excluir_obra or '',))]
+
+    def buscar_semantica(self, texto, limite=120):
+        """Búsqueda por SIGNIFICADO en los precios registrados (fase 1). [] si el modelo no está disponible."""
+        from . import semantica as SE
+        if not texto.strip() or not SE.disponible():
+            return []
+        filas = [dict(r) for r in self.c.execute(self._SELECT + 'ORDER BY pr.id')]
+        if not filas:
+            return []
+        textos = sorted({f['descripcion'] for f in filas})
+        vt = SE.vectores(textos, 'passage')
+        vq = SE.vectores([texto], 'query')
+        if vt is None or vq is None:
+            return []
+        sim = dict(zip(textos, (vt @ vq[0]).tolist()))
+        palabras = [w for w in E.norm(texto).split() if len(w) >= 3 or w.replace(',', '').isdigit()]
+        for f in filas:
+            f['parecido'] = round(sim[f['descripcion']], 3)
+            # significado + palabras que coinciden (lo que además comparte términos con la búsqueda va antes)
+            dn = ' ' + (f['desc_norm'] or E.norm(f['descripcion'])) + ' '
+            coinc = sum(1 for w in palabras if w in dn) / len(palabras) if palabras else 0
+            f['_orden'] = f['parecido'] + 0.04 * coinc
+        filas.sort(key=lambda f: (-f['_orden'], f['precio_neto']))
+        corte = filas[0]['_orden'] - 0.06               # solo lo que se parece casi tanto como lo mejor
+        return [f for f in filas if f['_orden'] >= corte][:limite]
 
     def decisiones(self, texto='', limite=500, solo_activas=True):
         conds, args = [], []

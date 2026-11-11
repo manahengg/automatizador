@@ -73,14 +73,27 @@ def comprobar(condicion, texto):
         raise AssertionError(texto)
 
 
+from urllib.parse import quote
+
+
 def main():
     os.environ['AUTOMATIZADOR_DATOS'] = tempfile.mkdtemp(prefix='prueba_app_')
+    # los modelos de IA se descargan una vez y se reutilizan entre pruebas
+    os.environ.setdefault('AUTOMATIZADOR_MODELOS', os.path.join(tempfile.gettempdir(), 'automatizador_modelos'))
     from automatizador import app_web
     threading.Thread(target=app_web.servir, kwargs={'puerto': PUERTO, 'abrir': False}, daemon=True).start()
     from automatizador.tests import ejemplos
     docs_prueba = ejemplos.generar(tempfile.mkdtemp(prefix='ejemplos_'))
     CLIENTE, OFERTA1, OFERTA2 = docs_prueba['cliente'], docs_prueba['oferta1'], docs_prueba['oferta2']
     time.sleep(2)
+    t0 = time.time()
+    while time.time() - t0 < 600:                   # el modelo de comprensión del texto se descarga solo al arrancar
+        ms = pedir('/api/modelos')
+        e5 = next(m for m in ms['modelos'] if m['nombre'] == 'e5-small')
+        if e5['disponible'] or (e5['descarga'] or {}).get('estado') == 'error':
+            break
+        time.sleep(2)
+    comprobar(e5['disponible'], 'el modelo de comprensión del texto se descarga solo (%s)' % (e5['descarga'] or {}).get('texto'))
     obra = 'Prueba'
     O = '/api/obra/' + obra
     pedir('/api/obras', {'nombre': obra, 'cod': 'E0001', 'cliente': 'Cliente Prueba'})
@@ -146,6 +159,10 @@ def main():
     # 6) caso aprendido
     pedir(O + '/caso', {'material': destino, 'observacion': 'prueba', 'proveedor': '', 'cantidad': ''})
     comprobar(len(pedir('/api/casos')) == 1, 'anotar un caso')
+    # fase 1: búsqueda por significado (otras palabras, mismo material)
+    sem = pedir('/api/bbdd?modo=sem&q=' + quote('conductor de cobre libre de halógenos de 2,5'))
+    comprobar(sem.get('semantica') and sem['filas'] and '2,5' in sem['filas'][0]['descripcion'],
+              'búsqueda por significado: "%s"' % (sem['filas'][0]['descripcion'] if sem['filas'] else '-'))
     # 7) nombre de los Excel: Cod_Obra.Cliente.descripcion.tipo.DD-MM-YYYY
     nom, _ = nombre_descarga(O + '/excel')
     hoy = time.strftime('%d-%m-%Y')
@@ -206,7 +223,6 @@ def main():
     # 10) pedidos: al más barato en total (toda su oferta) y uno por distribuidor con sus materiales más baratos
     ganador = next(x for x in d['totales_prov'] if x['ganador'])
     comprobar(all(x['proveedor'] != 'Junta Extremadura' for x in d['totales_prov']), 'la Junta no recibe pedidos')
-    from urllib.parse import quote
     nom, xlsx = nombre_descarga(O + '/pedido?modo=total&prov=' + quote(ganador['proveedor']))
     comprobar('.Pedido_' in nom and xlsx[:2] == b'PK', 'pedido completo al más barato en total (%s): %s'
               % (ganador['proveedor'], nom))

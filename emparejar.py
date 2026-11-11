@@ -255,6 +255,40 @@ def preparar_idf(materiales):
     _IDF_G_MAX = math.log(1 + n)
 
 
+_SEM = {}                     # parecido de significado línea x material (semantica.py), si el modelo está disponible
+PESO_SEM = 0.25
+
+
+def preparar_semantica(materiales, lineas):
+    """Calcula el parecido de significado de cada línea con cada material (fase 1). Sin modelo, no hace nada."""
+    _SEM.clear()
+    try:
+        from . import semantica as SE
+        if not materiales or not lineas or not SE.disponible():
+            return
+        vm = SE.vectores([SE.texto_material(m) for m in materiales])
+        vl = SE.vectores([SE.texto_linea(l) for l in lineas])
+        if vm is None or vl is None:
+            return
+        import numpy as np
+        C = vl @ vm.T
+        _SEM.update(C=C, med=np.median(C, axis=1), fila={l.i: k for k, l in enumerate(lineas)},
+                    col={m.id: k for k, m in enumerate(materiales)})
+    except Exception:
+        _SEM.clear()
+
+
+def sim_semantica(l, m):
+    """(parecido, parecido relativo 0..1) o None: cuánto más se parece la línea a este material que a la media."""
+    if not _SEM:
+        return None
+    r, c = _SEM['fila'].get(l.i), _SEM['col'].get(m.id)
+    if r is None or c is None:
+        return None
+    v = float(_SEM['C'][r, c])
+    return v, max(0.0, min(1.0, (v - float(_SEM['med'][r])) / 0.10))
+
+
 def puntuar(l, m, conocidas=None):
     """0..~1.5. Cuanto más alto, más seguro que la línea l es el material m."""
     s = 0.0
@@ -328,6 +362,11 @@ def puntuar(l, m, conocidas=None):
         s -= 0.06
     if l.plantas and m.plantas:
         s += 0.2 if l.plantas & m.plantas else -0.35
+    sem = sim_semantica(l, m)
+    if sem and s >= 0.35:
+        # el texto dice lo mismo aunque con otras palabras: desempata entre candidatos que ya se parecen por reglas,
+        # pero no crea parejas de la nada (sin esto casaba 'kit ventiladores rack' como complemento de un enchufe)
+        s += PESO_SEM * sem[1]
     if conocidas:
         k = conocidas.get((l.proveedor.lower(), _cod(l.referencia) or E.norm(l.partida.descripcion)[:60]))
         if k and (k == m.clave or k == ('cli:' + _cod(m.codigo)) or k == 'desc:' + E.norm(m.partida.resumen or m.descripcion)[:60]):
@@ -353,6 +392,7 @@ def emparejar(materiales, lineas, manuales=None, conocidas=None):
             cubiertos.add(mid)
     normales = [l for l in lineas if l.i not in usadas and not l.es_canon]
     preparar_idf(materiales)
+    preparar_semantica(materiales, lineas)
     puntos = {}
     for l in normales:
         fila = []
@@ -759,6 +799,7 @@ def emparejar_catalogo(materiales, lineas, manuales=None, conocidas=None):
     manuales = manuales or {}
     por_id = {m.id: m for m in materiales}
     preparar_idf(materiales)
+    preparar_semantica(materiales, [l for l in lineas if l.partida.precio is not None])
     asign, fijados, vetadas = [], set(), set()
     por_i = {l.i: l for l in lineas}
     for li, mid in manuales.items():

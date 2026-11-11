@@ -492,6 +492,7 @@ class Obra:
                     bbdd.registrar_oferta(self.nombre, pv['nombre'], os.path.basename(d['archivo']), d['huella'], d['doc'],
                                           [l for l in pv['lineas'] if l.huella == d['huella']], asignado)
             res.consultar_historico(bbdd)
+            res.registrar_y_buscar_parecidas(bbdd)
         return res
 
 
@@ -507,6 +508,46 @@ class Resultado:
         self.casos = {}          # material_id -> [(parecido, caso)]  correcciones aprendidas en casos parecidos
         self.optimo_fv = {}      # material_id -> [(coste, nº módulos, precio BBDD)]  mejor forma de llegar a los kWp
         self.avisos_referencia = {}   # material_id -> [texto]  base de precios más barata que los distribuidores
+        self.parecidas = {}           # material_id -> [partidas parecidas de otras obras] (fase 1)
+
+    def registrar_y_buscar_parecidas(self, bbdd):
+        """Guarda las partidas de esta obra en el historial y busca, para cada una, las PARECIDAS de otras obras
+        (por significado, fase 1) con su mejor precio. -> self.parecidas {material_id: [fila hist + parecido]}"""
+        from . import semantica as SE
+        self.parecidas = {}
+        filas = []
+        for m in self.materiales:
+            nom, pr = self.mas_barato(m)
+            filas.append({'mat_id': m.id, 'codigo': (m.codigo or '').strip(), 'resumen': (m.partida.resumen or '')[:200],
+                          'texto': SE.texto_material(m)[:400], 'familia': m.atributos.get('familia'), 'clave': m.clave,
+                          'unidad': m.unidad, 'cantidad': m.cantidad, 'precio_cliente': m.partida.precio,
+                          'mejor_proveedor': nom, 'mejor_precio': pr,
+                          'ofertas': json.dumps({pv['nombre']: round(pv['ofertas'][m.id].precio, 4)
+                                                 for pv in self.proveedores if m.id in pv['ofertas']
+                                                 and pv['ofertas'][m.id].precio is not None}, ensure_ascii=False)})
+        try:
+            bbdd.registrar_partidas(self.obra.nombre, filas)
+            hist = bbdd.partidas_hist(excluir_obra=self.obra.nombre)
+            if not hist or not SE.disponible():
+                return
+            vh = SE.vectores([h['texto'] for h in hist])
+            vm = SE.vectores([f['texto'] for f in filas])
+            if vh is None or vm is None:
+                return
+            S = vm @ vh.T
+            for k, m in enumerate(self.materiales):
+                orden = S[k].argsort()[::-1][:5]
+                lista = []
+                for j in orden:
+                    if S[k, j] < 0.90:
+                        break
+                    h = dict(hist[j], parecido=round(float(S[k, j]), 3))
+                    h['ofertas'] = json.loads(h['ofertas'] or '{}')
+                    lista.append(h)
+                if lista:
+                    self.parecidas[m.id] = lista
+        except Exception:
+            pass
 
     def avisos_aprendidos(self, m):
         """Textos de lo aprendido para el material m (casos anteriores y optimización por potencia)."""

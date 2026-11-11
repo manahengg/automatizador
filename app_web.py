@@ -499,7 +499,14 @@ def servir(puerto=8765, abrir=True):
                 return self._proteger(lambda: self._json(db().casos()))
             if ruta == '/api/bbdd':
                 texto = (q.get('q') or [''])[0]
+                if (q.get('modo') or [''])[0] == 'sem':
+                    return self._proteger(lambda: self._json({'resumen': db().resumen(), 'filas': db().buscar_semantica(texto),
+                                                              'semantica': True}))
                 return self._proteger(lambda: self._json({'resumen': db().resumen(), 'filas': db().buscar(texto)}))
+            if ruta == '/api/modelos':
+                from . import modelos, semantica
+                return self._proteger(lambda: self._json({'modelos': [modelos.estado(n) for n in modelos.MODELOS],
+                                                          'semantica': semantica.estado()}))
             self._error(404, 'No encontrado.')
 
         def _obras_locales(self):
@@ -654,6 +661,11 @@ def servir(puerto=8765, abrir=True):
                     _avisar_cambio(None, 'Configuración cambiada')
                     self._json({'ok': True})
                 return self._proteger(cfg)
+            if ruta == '/api/modelos/descargar':
+                def desc():
+                    from . import modelos
+                    self._json(modelos.descargar(self._json_cuerpo()['nombre']))
+                return self._proteger(desc)
             if ruta == '/api/decisiones/olvidar':
                 def olv():
                     D.olvidar(db(), self._json_cuerpo()['uid'])
@@ -809,6 +821,10 @@ def servir(puerto=8765, abrir=True):
 
     sinc = Sincronizador()
     sinc.start()
+    if not os.environ.get('AUTOMATIZADOR_SIN_DESCARGAS'):
+        from . import modelos
+        if not modelos.ruta('e5-small'):            # comprensión del texto: se descarga sola (~135 MB, una vez)
+            modelos.descargar('e5-small')
     srv = ThreadingHTTPServer(('127.0.0.1', puerto), Manejador)
     url = 'http://127.0.0.1:%d/' % puerto
     print('App abierta en %s  (Ctrl+C para cerrar)' % url)
