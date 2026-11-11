@@ -33,6 +33,7 @@ from .bbdd import BBDD
 from .obra import Obra, clave_mat, leer_cliente, ruta_bbdd
 from .exportadores import excel_comparativa, excel_peticion, excel_pedido
 from . import decisiones as D
+from . import llm as LLM                    # registra los modelos de lenguaje (no carga nada hasta que se usa)
 
 MAX_SUBIDA = 300 * 1024 * 1024
 BLOQUEO = threading.RLock()        # una operación pesada cada vez (OCR, análisis, escritura)
@@ -259,6 +260,52 @@ def _decision_pedido(o, r, prov, ids):
         _aprendido()
 
 
+def _trabajo_ia(o, datos):
+    """Explicación / resumen / pregunta con el modelo de lenguaje local, en segundo plano (se ve mientras escribe)."""
+    if not LLM.disponible():
+        raise ValueError('El modelo de lenguaje no está instalado en este PC: descárgalo en 🧠 Aprendizaje → Modelos de '
+                         'IA locales (una sola vez; luego funciona sin internet).')
+    tipo = datos.get('tipo')
+    r = analisis(o)
+    if tipo == 'partida':
+        f = r.fichas.get(datos.get('material'))
+        if not f:
+            raise ValueError('No existe esa partida.')
+        contexto, pregunta, maximo, titulo = LLM.hechos_partida(f), LLM.PREGUNTA_PARTIDA, 180, 'Explicación de la partida %s' % f['id']
+    elif tipo == 'obra':
+        contexto, pregunta, maximo, titulo = (LLM.datos_obra(r), LLM.PREGUNTA_OBRA + ' ' + LLM.INSTRUCCION_PROPUESTAS, 320,
+                                              'Resumen de la obra')
+    elif tipo == 'pregunta' and (datos.get('pregunta') or '').strip():
+        q = datos['pregunta'].strip()[:400]
+        contexto, pregunta, maximo, titulo = (LLM.datos_pregunta(r, q), LLM.PREGUNTA_LIBRE + q + ' ' +
+                                              LLM.INSTRUCCION_PROPUESTAS, 280, q)
+    else:
+        raise ValueError('Petición no válida.')
+    t = Trabajo(titulo)
+    t.paso('Pensando… (el modelo funciona en este PC: tarda unos segundos)', 0.05)
+
+    def correr():
+        try:
+            if not LLM._EST['nombre']:
+                t.paso('Cargando el modelo de lenguaje (la primera vez tarda unos segundos)…', 0.05)
+
+            def al_escribir(txt):
+                t.parcial = txt
+                t.paso('Escribiendo…', min(0.95, 0.1 + len(txt) / 900))
+            res = LLM.generar(contexto, pregunta, maximo, al_escribir)
+            mats = {m.id for m in r.materiales}
+            res['propuestas'] = [x for x in res['propuestas'] if x['id'] in mats]
+            t.parcial, t.resultado = res['texto'], res
+            t.mensaje = '%s · %d palabras en %s s (%s, en este PC)' % (titulo, res['tokens'], res['segundos'], res['modelo'])
+            t.estado = 'listo'
+            t.fraccion = 1.0
+        except Exception as e:
+            traceback.print_exc()
+            t.estado, t.mensaje = 'error', 'Error del modelo de lenguaje: %s' % e
+    threading.Thread(target=correr, daemon=True).start()
+    return t
+
+
 TRABAJOS = {}          # id -> Trabajo (subidas en curso, para la barra de progreso)
 
 
@@ -275,6 +322,8 @@ class Trabajo:
         self.pasos = []                       # [{'texto', 'seg'}] pasos terminados
         self._t_paso = time.time()
         self.mensaje = ''
+        self.parcial = ''                     # texto que va escribiendo el modelo de lenguaje
+        self.resultado = None
         TRABAJOS[self.id] = self
         for k in [k for k, t in TRABAJOS.items() if time.time() - t.inicio > 3600]:
             TRABAJOS.pop(k, None)
@@ -297,7 +346,8 @@ class Trabajo:
     def json(self):
         return {'id': self.id, 'titulo': self.titulo, 'estado': self.estado, 'texto': self.texto,
                 'fraccion': round(self.fraccion, 3), 'pasos': self.pasos, 'mensaje': self.mensaje,
-                'segundos': round(time.time() - self.inicio), 'seg_paso': round(time.time() - self._t_paso)}
+                'segundos': round(time.time() - self.inicio), 'seg_paso': round(time.time() - self._t_paso),
+                'parcial': self.parcial, 'resultado': self.resultado}
 
 
 def procesar_subida(trabajo, o, accion, ficheros, campos, carpeta_tmp):
@@ -559,7 +609,7 @@ def servir(puerto=8765, abrir=True):
             if ruta == '/api/modelos':
                 from . import modelos, semantica
                 return self._proteger(lambda: self._json({'modelos': [modelos.estado(n) for n in modelos.MODELOS],
-                                                          'semantica': semantica.estado()}))
+                                                          'semantica': semantica.estado(), 'lenguaje': LLM.estado()}))
             self._error(404, 'No encontrado.')
 
         def _obras_locales(self):
@@ -777,7 +827,7 @@ def servir(puerto=8765, abrir=True):
                     o = Obra.crear(d.get('nombre', ''), (d.get('cod') or '').strip(), (d.get('cliente') or '').strip())
                     self._json({'id': o.ident})
                 return self._proteger(crear)
-            m = re.fullmatch(r'/api/obra/([^/]+)/(cliente|proveedor|quitar|quitar_oferta|quitar_cliente|fijar|deshacer|reanalizar|caso|capitulos|datos|aceptar)', ruta)
+            m = re.fullmatch(r'/api/obra/([^/]+)/(cliente|proveedor|quitar|quitar_oferta|quitar_cliente|fijar|deshacer|reanalizar|caso|capitulos|datos|aceptar|ia)', ruta)
             if not m:
                 return self._error(404, 'No encontrado.')
             accion = m.group(2)
@@ -803,6 +853,8 @@ def servir(puerto=8765, abrir=True):
                                      daemon=True).start()
                     return self._json({'ok': True, 'trabajo': t.id})
                 datos = self._json_cuerpo()
+                if accion == 'ia':
+                    return self._json({'ok': True, 'trabajo': _trabajo_ia(o, datos).id})
                 with BLOQUEO:
                     if accion == 'quitar':
                         o.quitar_proveedor(datos['proveedor'], db())

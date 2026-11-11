@@ -288,6 +288,30 @@ def main():
                  po['Prueba']['horas_pedido']))
     comprobar(po.get('Otra_obra', {}).get('aprendidos', 0) >= 1 and mt['global']['aprendidos'] >= 1,
               'lo aprendido aplicado se cuenta (%d en total)' % mt['global']['aprendidos'])
+    # 14) fase 4: modelo de lenguaje local (si este PC lo tiene descargado; si no, debe decir cómo conseguirlo)
+    from automatizador import llm
+    comprobar(llm.propuestas('Revisar.\nPROPUESTA: aceptar 12\nPropuesto: ver Nº 3a') ==
+              [{'accion': 'aceptar', 'id': '12'}, {'accion': 'ver', 'id': '3a'}], 'propuestas del asistente -> botones')
+    ms = pedir('/api/modelos')
+    comprobar({'llm-phi4', 'llm-phi35'} <= {m['nombre'] for m in ms['modelos']}, 'modelos de lenguaje disponibles para descargar')
+    if ms['lenguaje']['modelo']:
+        for datos_ia in ({'tipo': 'partida', 'material': mid},
+                         {'tipo': 'pregunta', 'pregunta': '¿Qué partidas oferta Electrofil más baratas que la Junta?'}):
+            t = pedir(O2 + '/ia', datos_ia)['trabajo']
+            while True:
+                j = pedir('/api/trabajo/' + t)
+                if j['estado'] != 'trabajando':
+                    break
+                time.sleep(1)
+            comprobar(j['estado'] == 'listo' and len(j['resultado']['texto']) > 20,
+                      'asistente (%s): «%s» %s' % (datos_ia['tipo'], j['resultado']['texto'][:140].replace('\n', ' '),
+                                                  j['mensaje'][-40:]))
+    else:
+        try:
+            pedir(O2 + '/ia', {'tipo': 'obra'})
+            comprobar(False, 'sin modelo de lenguaje debe avisar')
+        except AssertionError as e:
+            comprobar('descárgalo' in str(e), 'sin modelo de lenguaje, la app explica cómo descargarlo')
     ea = pedir('/api/aprendizaje')
     comprobar(ea['muestras'] > 0 and ea['decisiones'] > 0,
               'modelo de confianza: %d decisiones, %d muestras (%d aciertos / %d errores), entrenado: %s %s'

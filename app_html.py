@@ -143,6 +143,23 @@ async function subir(tipo){const inp=tipo=='cliente'?$('#fCli'):$('#fProv');if(!
  catch(e){verProgreso(false);aviso(e.message,1)}finally{OCUPADO=false}}
 async function quitar(p){OCUPADO=true;const ok=confirm('¿Quitar la oferta de '+p+'?');OCUPADO=false;if(!ok)return;try{await api(`/api/obra/${encodeURIComponent(OBRA)}/quitar`,{method:'POST',body:JSON.stringify({proveedor:p})});abrirObra(OBRA)}catch(e){aviso(e.message,1)}}
 let SOLO_OF=null;
+function cajaIA(){return `<div class="caja" style="margin:0 0 6px;padding:8px 12px"><div class="fila"><b>🧠 Asistente (modelo de lenguaje en este PC)</b>
+ <button onclick="preguntarIA({tipo:'obra'},'respIA')">Resumen de la obra</button>
+ <input type="text" id="qIA" size="60" placeholder="Pregunta sobre la obra, p. ej.: ¿qué luminarias tienen distinto modelo al pedido?" onkeydown="if(event.key=='Enter')preguntarIA({tipo:'pregunta',pregunta:this.value},'respIA')">
+ <button onclick="preguntarIA({tipo:'pregunta',pregunta:$('#qIA').value},'respIA')">Preguntar</button></div><div id="respIA"></div></div>`}
+let IA_OCUPADO=false;
+async function preguntarIA(datos,dest){const el=$('#'+dest);if(!el)return;if(datos.tipo=='pregunta'&&!(datos.pregunta||'').trim())return aviso('Escribe la pregunta',1);
+ if(IA_OCUPADO)return aviso('El asistente está respondiendo otra cosa: espera a que termine',1);IA_OCUPADO=true;
+ el.innerHTML='<div class="peq">⏳ Preparando…</div>';
+ try{const r=await api(`/api/obra/${encodeURIComponent(OBRA)}/ia`,{method:'POST',body:JSON.stringify(datos)});let j;
+  do{await new Promise(z=>setTimeout(z,700));j=await api('/api/trabajo/'+r.trabajo);
+   el.innerHTML=`<div style="white-space:pre-wrap;margin-top:6px">${esc(j.parcial||'')}${j.estado=='trabajando'?'▌':''}</div><div class="peq">${j.estado=='trabajando'?'⏳ '+esc(j.texto)+' ('+j.segundos+' s)':''}</div>`}while(j.estado=='trabajando');
+  if(j.estado=='error')throw new Error(j.mensaje);
+  const pr=(j.resultado||{}).propuestas||[];
+  el.innerHTML=`<div style="white-space:pre-wrap;margin-top:6px;padding:8px;background:#f6f1fb;border-left:3px solid #7030a0">${esc((j.resultado||{}).texto||'')}</div>
+  ${pr.length?`<div class="fila" style="margin-top:4px"><span class="peq">Propuestas (tú decides):</span>${pr.map(x=>x.accion=='aceptar'?`<button onclick="if(confirm('¿Aceptar los casamientos de la partida ${esc(x.id)}?'))aceptar('${esc(x.id)}')">✔ Aceptar ${esc(x.id)}</button>`:`<button onclick="verFicha('${esc(x.id)}')">🔍 Ver ${esc(x.id)}</button>`).join('')}</div>`:''}
+  <div class="peq">${esc(j.mensaje)} · Revisa siempre los datos: el asistente puede equivocarse.</div>`}
+ catch(e){el.innerHTML=`<div class="alerta">${esc(e.message)}</div>${/descárgalo/.test(e.message)?'<button onclick="irAprendizaje()">Ir a Aprendizaje</button>':''}`}finally{IA_OCUPADO=false}}
 function cajaRevisar(d){const r=d.revisar||[];if(!r.length)return'';
  return `<details class="caja" style="margin:0 0 6px;padding:8px 12px" ${r.length?'open':''}><summary><b>⚠ Partidas a revisar (${r.length})</b> <span class="peq">— ordenadas por riesgo; pincha para ver su análisis</span></summary>
  <table style="width:auto;margin-top:4px"><tr><th>Riesgo</th><th>Nº</th><th>Código</th><th>Partida</th><th>Motivos</th></tr>${r.slice(0,15).map(x=>`<tr><td class="num" style="color:#c00000"><b>${x.riesgo}</b></td><td><a href="#" onclick="verFicha('${esc(x.id)}');return false">${esc(x.id)} 🔍</a></td><td>${esc(x.codigo)}</td><td>${esc((x.resumen||'').slice(0,80))}</td><td class="peq">${esc(x.motivos.join(' · '))}</td></tr>`).join('')}</table></details>`}
@@ -160,7 +177,8 @@ async function verFicha(mid){let f;try{f=await api(`/api/obra/${encodeURICompone
  <h4>4. Precio esperado</h4>${pe?`<p>≈ <b>${eur(pe.valor,4)}</b> por ${esc(q.unidad||'ud')} según ${pe.n} precios (de ${eur(pe.min,4)} a ${eur(pe.max,4)})</p><ul class="peq">${pe.fuentes.map(x=>'<li>'+esc(x)+'</li>').join('')}</ul>`:'<p class="peq">Aún no hay suficientes precios de este material en otras obras.</p>'}
  <h4>5. Antecedentes en otras obras</h4>${ant?`<table><tr><th>Obra</th><th>Código</th><th>Partida</th><th>Parecido</th><th>Más barato</th><th>Precio</th></tr>${ant}</table>`:'<p class="peq">No hay partidas parecidas en otras obras todavía.</p>'}
  ${f.aprendido.length?'<h4>Casos y óptimos aprendidos</h4>'+f.aprendido.map(a=>`<div>🧠 ${esc(a)}</div>`).join(''):''}
- <div class="fila" style="margin-top:10px"><button class="prim" onclick="aceptar('${esc(f.id)}')">✔ Aceptar sus casamientos</button><button onclick="anotar('${esc(f.id)}')">📝 Anotar caso</button></div></div>`;
+ <h4>🧠 Explicación</h4><div id="fichaIA" class="peq">Pulsa «Explicar» y el modelo de lenguaje de este PC lo explicará con estos datos (tarda unos segundos).</div>
+ <div class="fila" style="margin-top:10px"><button onclick="preguntarIA({tipo:'partida',material:'${esc(f.id)}'},'fichaIA')">🧠 Explicar</button><button class="prim" onclick="aceptar('${esc(f.id)}')">✔ Aceptar sus casamientos</button><button onclick="anotar('${esc(f.id)}')">📝 Anotar caso</button></div></div>`;
  let el=$('#ficha');if(!el){el=document.createElement('div');el.id='ficha';el.style.cssText='position:fixed;inset:40px 6% 20px 6%;overflow:auto;z-index:50;box-shadow:0 8px 40px rgba(0,0,0,.35);background:var(--fondo,#fff);border-radius:8px';document.body.appendChild(el)}
  el.innerHTML=h;OCUPADO=true}
 function cerrarFicha(){const el=$('#ficha');if(el)el.remove();OCUPADO=false}
@@ -207,7 +225,7 @@ function pintarComp(){const d=DATOS,P=d.proveedores.map(p=>p.nombre);
  const soloOf=SOLO_OF===null?(P.length>0&&conOf<total/2):SOLO_OF;
  const caps=[...new Set(d.materiales.filter(m=>Object.keys(m.prov).length).map(m=>m.cap))];
  const resumenOf=P.length?`<div class="caja" style="margin:0 0 6px;padding:8px 12px"><b>${conOf} de ${total}</b> materiales tienen oferta de algún proveedor${conOf<total?` (capítulos ofertados: ${caps.slice(0,8).map(esc).join(', ')}${caps.length>8?'…':''}). El resto de partidas del cliente no las ha ofertado nadie${soloOf?' y están ocultas: desmarca "solo partidas con oferta" para verlas':''}.`:'.'}</div>`:'';
- let h=`${resumenOf}${cajaRevisar(d)}${cajaPedidos(d)}${cajaReparto(d)}<div class="fila" style="margin-bottom:6px"><input type="text" id="filtro" placeholder="Filtrar por texto, código o capítulo" size="40" oninput="filtrar()">
+ let h=`${cajaIA()}${resumenOf}${cajaRevisar(d)}${cajaPedidos(d)}${cajaReparto(d)}<div class="fila" style="margin-bottom:6px"><input type="text" id="filtro" placeholder="Filtrar por texto, código o capítulo" size="40" oninput="filtrar()">
  <label title="Oculta las partidas que ningún proveedor ha ofertado"><input type="checkbox" id="soloOf" onchange="SOLO_OF=this.checked;filtrar()" ${soloOf?'checked':''}> solo partidas con oferta</label>
  <label><input type="checkbox" id="soloAl" onchange="filtrar()"> solo con alertas</label><button onclick="aceptar(null)" title="Confirma TODOS los casamientos actuales de la obra (revisa antes los amarillos y naranjas): la app aprende de ellos">✔ Aceptar todos los casamientos</button><span class="peq">Verde = más barato · amarillo = casamiento a revisar · naranja = ofertan algo distinto. Pasa el ratón por encima para ver detalles.</span></div>
  <div class="tabla"><table id="tcomp"><thead><tr><th>Nº</th><th>Código</th><th>Partida del cliente</th><th>Material a comprar</th><th>Ud</th><th>Cant.</th><th>Precio cliente</th>

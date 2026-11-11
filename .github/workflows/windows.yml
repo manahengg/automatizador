@@ -47,7 +47,7 @@ jobs:
         shell: pwsh
         run: |
           $py = "$pwd\paquete\python\python.exe"
-          & $py -c "import automatizador.app_web, rapidocr_onnxruntime, pdfplumber, openpyxl, numpy, pypdfium2; print('importaciones OK')"
+          & $py -c "import automatizador.app_web, rapidocr_onnxruntime, pdfplumber, openpyxl, numpy, pypdfium2, onnxruntime_genai; print('importaciones OK (también el motor de lenguaje)')"
           if ($LASTEXITCODE -ne 0) { exit 1 }
           & $py -c "from automatizador import actualizar as A; v = A.version_actual(); print('Versión:', v); assert A.instalado() and v['sha'] and v['rama']"
           if ($LASTEXITCODE -ne 0) { exit 1 }
