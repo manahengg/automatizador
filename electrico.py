@@ -89,6 +89,10 @@ def familia(texto, titulo=''):
         n = norm(t)
         if not n:
             continue
+        # 'Línea RZ1-K 4x35+1x16 bajo tubo': es un cable que va por un tubo, no un tubo
+        if re.search(r'\b(linea|conductor(es)?|cable|derivacion|circuito)\b|rz1|h07z1|\bxz1\b|rv-?k\b', n) and \
+                re.search(r'\d\s*[xg]\s*\d|\d\s*\(\s*1\s*x|\d\s*mm2', n):
+            n = re.sub(r'\b(bajo|en|sobre|por|dentro de)\s+(el\s+|la\s+|un\s+)?(tubo|canal|bandeja|canaleta)s?\b[^,.;]*', ' ', n)
         for fam, pat in FAMILIAS:
             if re.search(pat, n):
                 return fam

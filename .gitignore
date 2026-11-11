@@ -5,3 +5,10 @@ build/
 dist/
 *.spec.bak
 /venv
+
+# documentos reales de obras: nunca al repositorio (es público)
+obras/*
+!obras/bases_precios/
+ejemplos_prueba/
+*.backup*
+__pycache__/

@@ -26,13 +26,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r automatizador/requirements.txt
+          pip install reportlab          # solo para generar los documentos de prueba inventados (tests/ejemplos.py)
 
-      - name: Prueba rápida (lee los ejemplos y genera el Excel)
+      - name: Prueba rápida (documentos de prueba inventados -> Excel)
         shell: bash
         env:
           AUTOMATIZADOR_DATOS: ${{ runner.temp }}/datos_prueba
         run: |
-          python -m automatizador comparar "automatizador/obras/alburquerque/cliente/DOC20250604121822Pliego de prescripciones tecnicas.PDF.pdf" automatizador/obras/alburquerque/proveedores/electrofil/OFE_160_70922.pdf "automatizador/obras/alburquerque/proveedores/sonepar/SONEPAR  PRTºcentro empleo alburquerque.pdf" --obra prueba -o prueba.xlsx
+          python -m automatizador.tests.ejemplos ejemplos_prueba
+          python -m automatizador comparar ejemplos_prueba/presupuesto_cliente_prueba.xlsx ejemplos_prueba/oferta_prueba_1.pdf ejemplos_prueba/oferta_prueba_escaneada.pdf --obra prueba -o prueba.xlsx
 
       - name: Prueba de la app de principio a fin (subir, elegir capítulos, corregir líneas, Excel)
         shell: bash
@@ -49,8 +51,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           & $py -c "from automatizador import actualizar as A; v = A.version_actual(); print('Versión:', v); assert A.instalado() and v['sha'] and v['rama']"
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          $pdf = "$pwd\automatizador\obras\mormones\proveedores\sonepar\ilumlamp(SOLO ILUM.LAMP.).pdf"
-          & $py -c "import sys; from automatizador.lectores import pdf_oferta; d = pdf_oferta.leer(sys.argv[1]); n = sum(1 for _ in d.partidas()); print('OCR Sonepar:', n, 'lineas'); sys.exit(0 if n > 20 else 1)" $pdf
+          $pdf = "$pwd\ejemplos_prueba\oferta_prueba_escaneada.pdf"
+          & $py -c "import sys; from automatizador.lectores import pdf_oferta; d = pdf_oferta.leer(sys.argv[1]); n = sum(1 for _ in d.partidas()); print('OCR oferta escaneada de prueba:', n, 'lineas'); sys.exit(0 if n >= 4 else 1)" $pdf
           if ($LASTEXITCODE -ne 0) { exit 1 }
           $env:AUTOMATIZADOR_DATOS = "$env:RUNNER_TEMP\datos_paquete"
           $p = Start-Process -FilePath $py -ArgumentList "`"$pwd\paquete\app\automatizador\windows\lanzador.py`"", "--no-abrir" -WorkingDirectory "$pwd\paquete\app" -PassThru

@@ -32,8 +32,8 @@ COLUMNAS = {
     'importe': {'IMPORTE', 'PARCIAL', 'TOTAL', 'SUBTOTAL', 'NETO TOTAL'},
 }
 NUMERICAS = ('cantidad', 'precio', 'dto', 'importe')
-FIN_TABLA = re.compile(r'^(P[aá]gina\s+\d+\s*/\s*\d+|P[aá]g\.?:?\s*\d|Suma y sigue|SUBTOTAL\b|Importes\b|TOTAL VENTA|'
-                       r'Vendedor\s*:|Fecha Validez|Base imponible|TOTAL BRUTO|TOTAL NETO|Precios:|IMP\.?\s*BRUTO)', re.I)
+FIN_TABLA = re.compile(r'^(P[aá]gina\s+\d+\s*/\s*\d+|P[aá]g\.?:?\s*\d|Suma\s*y\s*sigue|SUBTOTAL\b|Importes\b|TOTAL\s*VENTA|'
+                       r'Vendedor\s*:|Fecha\s*Validez|Base\s*imponible|TOTAL\s*BRUTO|TOTAL\s*NETO|Precios:|IMP\.?\s*BRUTO)', re.I)
 PROVEEDORES_CONOCIDOS = ('ELECTROMERCANTIL', 'ELECTROFIL', 'SONEPAR', 'REXEL', 'SALTOKI', 'FEGIME', 'GRUPO ELEKTRA',
                          'ELECTRO STOCKS', 'DIELECTRO', 'COMERCIAL ELECTRICA', 'ELECTRICIDAD MARTOS', 'YESTE')
 MARCAS = ('ERCO', 'PHILIPS', 'SCHNEIDER', 'SIMON', 'LEGRAND', 'ABB', 'HAGER', 'IGUZZINI', 'TROX', 'LAMP', 'ORBIS')

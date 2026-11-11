@@ -28,7 +28,7 @@ PDF escaneado o Excel) —al principio o en cualquier momento— y la app:
 - **Datos de la obra y nombre de los Excel**: al crear la obra se piden el **código de obra** y el **cliente** (se
   cambian con "✏ Datos de la obra"). Todo Excel que genera la app se llama
   `Cod_Obra.Cliente.descripcion_breve.tipo_documento.DD-MM-YYYY.xlsx`, p. ej.
-  `E0123.CONSTRUCTORA.MUSEO_ROMANO_MERIDA.Comparativa.11-11-2026.xlsx`. Los Excel ya no llevan el logo.
+  `E0123.CONSTRUCTORA.EDIFICIO_EJEMPLO.Comparativa.11-11-2026.xlsx`. Los Excel ya no llevan el logo.
 - **Petición de oferta** ("📤 Petición de oferta"): Excel con las partidas de los capítulos elegidos **sin precios**
   para mandarlo a los proveedores (cantidad real de material, descripción completa, celdas amarillas para marca,
   referencia, precio y descuento; sin el nombre del cliente). Cuando el proveedor lo devuelve relleno se sube como
@@ -138,6 +138,7 @@ python -m automatizador bbdd "1x35 rz1-k"
 
 ## Ejemplos
 
-`obras/` contiene casos reales usados para probar: Alburquerque (cliente en PDF; Electrofil en PDF y Sonepar
-escaneado), Museo de Mérida (cliente en BC3; Electromercantil y Electrofil), Mormones (cliente en varios Excel; Sonepar
-escaneado) y `bases_precios/` (base de precios de la Junta de Extremadura 2026).
+Los documentos reales de las obras (presupuestos de clientes y ofertas de proveedores) **no se guardan en el
+repositorio**, que es público: `obras/` está en `.gitignore` salvo `obras/bases_precios/` (base de precios pública de la
+Junta de Extremadura 2026). Las pruebas automáticas usan documentos inventados que genera `tests/ejemplos.py`
+(un presupuesto en Excel y ofertas en PDF, una de ellas escaneada para probar el OCR).

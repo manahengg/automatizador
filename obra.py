@@ -240,7 +240,7 @@ class Obra:
 
     def nombre_excel(self, tipo, fecha=None):
         """'Cod_Obra.Cliente.descripcion_breve.tipo_documento.DD-MM-YYYY.xlsx' (p. ej.
-        'E0123.CONSTRUCTORA.MUSEO_ROMANO_MERIDA.Comparativa.11-11-2026.xlsx'). Los puntos separan los campos, así que
+        'E0123.CONSTRUCTORA.EDIFICIO_EJEMPLO.Comparativa.11-11-2026.xlsx'). Los puntos separan los campos, así que
         dentro de cada campo los puntos y espacios pasan a '_'."""
         d = self.estado.get('datos') or {}
 

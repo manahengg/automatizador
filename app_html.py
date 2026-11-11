@@ -52,7 +52,7 @@ function cargando(on,t){$('#cargando').style.display=on?'flex':'none';$('#cargan
 async function api(url,opt){const r=await fetch(url,opt);const j=await r.json().catch(()=>({error:'Respuesta no válida'}));if(!r.ok||j.error)throw new Error(j.error||r.status);return j}
 async function irInicio(){OBRA=null;$('#titulo').textContent='Comparador de ofertas de material eléctrico';
  const obras=await api('/api/obras');
- $('#app').innerHTML=`<div class="caja fila"><b>Nueva obra:</b><input type="text" id="nuevaObra" placeholder="Nombre / descripción breve (p. ej. Museo Romano Mérida)" size="40"><input type="text" id="nuevaCod" placeholder="Cód. obra (p. ej. E0123)" size="14"><input type="text" id="nuevaCli" placeholder="Cliente (p. ej. CONSTRUCTORA)" size="20"><button class="prim" onclick="crearObra()">Crear</button></div>
+ $('#app').innerHTML=`<div class="caja fila"><b>Nueva obra:</b><input type="text" id="nuevaObra" placeholder="Nombre / descripción breve (p. ej. Edificio Ejemplo)" size="40"><input type="text" id="nuevaCod" placeholder="Cód. obra (p. ej. E0123)" size="14"><input type="text" id="nuevaCli" placeholder="Cliente (p. ej. CONSTRUCTORA)" size="20"><button class="prim" onclick="crearObra()">Crear</button></div>
  <div class="tarjetas">${obras.map(o=>`<div class="tarjeta" onclick="abrirObra('${esc(o.id)}')"><h3>${esc(o.nombre)}</h3>
  <div>${o.cliente?'✔ Presupuesto del cliente':'✖ Falta el presupuesto del cliente'}</div><div class="peq">Proveedores: ${o.proveedores.map(esc).join(', ')||'ninguno'}</div></div>`).join('')||'<p>No hay obras todavía.</p>'}</div>`}
 async function crearObra(){const n=$('#nuevaObra').value.trim();if(!n)return aviso('Escribe un nombre',1);const cod=$('#nuevaCod').value.trim();if(!cod&&!confirm('Sin código de obra: los Excel saldrán como "SIN.…". ¿Crear igualmente? (se puede poner luego en "Datos de la obra")'))return;
@@ -60,7 +60,7 @@ async function crearObra(){const n=$('#nuevaObra').value.trim();if(!n)return avi
 async function datosObra(){const d=(DATOS&&DATOS.datos)||{};OCUPADO=true;
  const cod=prompt('Código de la obra (p. ej. E0123). Se usa en el nombre de los Excel: Cod_Obra.Cliente.descripcion.tipo.fecha',d.cod||'');if(cod===null){OCUPADO=false;return false}
  const cli=prompt('Cliente (p. ej. CONSTRUCTORA):',d.cliente||'');if(cli===null){OCUPADO=false;return false}
- const des=prompt('Descripción breve de la obra (p. ej. Museo Romano Mérida):',d.descripcion||(DATOS?DATOS.nombre:''));OCUPADO=false;if(des===null)return false;
+ const des=prompt('Descripción breve de la obra (p. ej. Edificio Ejemplo):',d.descripcion||(DATOS?DATOS.nombre:''));OCUPADO=false;if(des===null)return false;
  try{await api(`/api/obra/${encodeURIComponent(OBRA)}/datos`,{method:'POST',body:JSON.stringify({cod:cod,cliente:cli,descripcion:des})});DATOS.datos={cod:cod.trim(),cliente:cli.trim(),descripcion:des.trim()};pintarObra();return true}catch(e){aviso(e.message,1);return false}}
 async function descargar(tipo,extra){if(!(DATOS.datos||{}).cod){aviso('Falta el código de la obra para nombrar el Excel');if(!await datosObra())return}
  location.href=`/api/obra/${encodeURIComponent(OBRA)}/${tipo}`+(extra||'')}

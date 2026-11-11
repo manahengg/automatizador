@@ -14,11 +14,7 @@ import uuid
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(AQUI)
-ALB = os.path.join(REPO, 'obras', 'alburquerque')
-CLIENTE = os.path.join(ALB, 'cliente', 'DOC20250604121822Pliego de prescripciones tecnicas.PDF.pdf')
-ELECTROFIL = os.path.join(ALB, 'proveedores', 'electrofil', 'OFE_160_70922.pdf')
-MERIDA_ELECTROFIL = os.path.join(REPO, 'obras', 'mueso merida', 'proveedores', 'electrofil',
-                                 'OFERTA_ELECTROFIL_160_79996.pdf')
+# documentos INVENTADOS (tests/ejemplos.py): el repositorio es público y no lleva documentos reales de obras
 JUNTA = os.path.join(REPO, 'obras', 'bases_precios', 'BASE_DE_DATOS_PRECIOS_JUNTA_EXTREM.xlsx')
 PUERTO = 8791
 BASE = 'http://127.0.0.1:%d' % PUERTO
@@ -81,6 +77,9 @@ def main():
     os.environ['AUTOMATIZADOR_DATOS'] = tempfile.mkdtemp(prefix='prueba_app_')
     from automatizador import app_web
     threading.Thread(target=app_web.servir, kwargs={'puerto': PUERTO, 'abrir': False}, daemon=True).start()
+    from automatizador.tests import ejemplos
+    docs_prueba = ejemplos.generar(tempfile.mkdtemp(prefix='ejemplos_'))
+    CLIENTE, OFERTA1, OFERTA2 = docs_prueba['cliente'], docs_prueba['oferta1'], docs_prueba['oferta2']
     time.sleep(2)
     obra = 'Prueba'
     O = '/api/obra/' + obra
@@ -97,12 +96,16 @@ def main():
             rec(n['hijos'])
     rec(caps['arbol'])
     pedir(O + '/capitulos', {'incluidos': todos})
-    subir(O + '/proveedor', [ELECTROFIL], {'proveedor': 'Electrofil', 'sustituir': '0'})
-    subir(O + '/proveedor', [MERIDA_ELECTROFIL], {'proveedor': 'Electrofil', 'sustituir': '0'})
+    subir(O + '/proveedor', [OFERTA1], {'proveedor': 'Electrofil', 'sustituir': '0'})
+    subir(O + '/proveedor', [OFERTA2], {'proveedor': 'Electrofil', 'sustituir': '0'})
     d = pedir(O)
     docs = d['lineas']['Electrofil']['docs']
     comprobar(len(docs) == 2, 'un proveedor con dos ofertas (se añaden, no se sustituyen)')
-    comprobar(len(d['materiales']) == 49, 'materiales del presupuesto (43 partidas, 6 desglosadas): %d' % len(d['materiales']))
+    comprobar(len(d['materiales']) == ejemplos.MATERIALES,
+              'materiales del presupuesto (%d partidas, la 4x35+1x16 desglosada): %d' % (len(ejemplos.PARTIDAS),
+                                                                                   len(d['materiales'])))
+    con_oferta = sum(1 for m in d['materiales'] if m['prov'])
+    comprobar(con_oferta == ejemplos.MATERIALES, 'todos los materiales casados con las ofertas: %d' % con_oferta)
     lineas = d['lineas']['Electrofil']['lineas']
     libre = next(l for l in lineas if not l['mat'] and l['precio'] is not None)
     destino = d['materiales'][5]['id']
@@ -136,9 +139,9 @@ def main():
     nom, _ = nombre_descarga(O + '/excel')
     hoy = time.strftime('%d-%m-%Y')
     comprobar(nom == 'E0001.CLIENTE_PRUEBA.PRUEBA.Comparativa.%s.xlsx' % hoy, 'nombre del Excel: %s' % nom)
-    pedir(O + '/datos', {'cod': 'E0123', 'cliente': 'Constructora', 'descripcion': 'Museo Romano Mérida'})
+    pedir(O + '/datos', {'cod': 'E0123', 'cliente': 'Constructora', 'descripcion': 'Edificio Ejemplo'})
     nom, _ = nombre_descarga(O + '/excel')
-    comprobar(nom.startswith('E0123.CONSTRUCTORA.MUSEO_ROMANO_MERIDA.Comparativa.'), 'cambiar los datos de la obra: %s' % nom)
+    comprobar(nom.startswith('E0123.CONSTRUCTORA.EDIFICIO_EJEMPLO.Comparativa.'), 'cambiar los datos de la obra: %s' % nom)
     # 8) petición de oferta sin precios -> el proveedor la rellena -> se sube como oferta y se casa por código
     import openpyxl
     from automatizador.exportadores import excel_peticion as P
@@ -152,7 +155,7 @@ def main():
     ws = wb.worksheets[0]
     rellenas = 0
     for r in range(P.F_CABECERA + 1, ws.max_row + 1):
-        if ws.cell(r, P.C_COD).value and rellenas < 12:
+        if ws.cell(r, P.C_COD).value and rellenas < 8:
             ws.cell(r, P.C_PRECIO).value = 10 + r
             ws.cell(r, P.C_DTO).value = 25
             rellenas += 1
@@ -160,13 +163,13 @@ def main():
     subir(O + '/proveedor', [ruta], {'proveedor': 'Proveedor Peticion', 'sustituir': '0'})
     d = pedir(O)
     ls = d['lineas']['Proveedor Peticion']['lineas']
-    comprobar(len(ls) == 12 and all(l['mat'] for l in ls) and all(l['manual'] is False or l['mat'] for l in ls),
+    comprobar(len(ls) == rellenas and all(l['mat'] for l in ls) and all(l['manual'] is False or l['mat'] for l in ls),
               'la petición rellena se casa entera por código (%d de %d)' % (sum(1 for l in ls if l['mat']), len(ls)))
     # 9) base de precios de la Junta: referencia, no cuenta para el más barato ni el reparto
     subir(O + '/proveedor', [JUNTA], {'proveedor': 'Junta Extremadura', 'sustituir': '0'})
     d = pedir(O)
     j = d['lineas']['Junta Extremadura']
-    comprobar(j['referencia'] and j['catalogo'] and 0 < len(j['lineas']) < 60,
+    comprobar(j['referencia'] and j['catalogo'] and 0 < len(j['lineas']) <= ejemplos.MATERIALES,
               'la base de la Junta entra como referencia (%d artículos usados)' % len(j['lineas']))
     comprobar(all(m['mejor']['prov'] != 'Junta Extremadura' for m in d['materiales']), 'la Junta no es "más barato"')
     comprobar(d['reparto']['filas'] and all(x['proveedor'] != 'Junta Extremadura' for x in d['reparto']['filas']),
