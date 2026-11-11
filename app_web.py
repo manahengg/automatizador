@@ -83,7 +83,17 @@ def _avisar_cambio(obra, texto, usuario=None):
 
 
 def _marca(o):
-    return (o.marca(), VERSION['conocimiento'])
+    return (o.marca(), VERSION['conocimiento'], _marca_bases())
+
+
+def _marca_bases():
+    """Cambia cuando alguien añade o quita una base de precios global (en cualquier PC)."""
+    from . import bases
+    d = bases.dir_compartida()
+    try:
+        return tuple(sorted(os.listdir(d))) if os.path.isdir(d) else ()
+    except OSError:
+        return ()
 
 
 def analisis(o, forzar=False, progreso=None):
@@ -134,6 +144,10 @@ def datos_obra(o):
         return base
     r = analisis(o)
     provs = r.proveedores
+    for pv in provs:
+        if pv.get('global'):              # bases de precios presentes en todas las obras
+            base['proveedores'].append({'nombre': pv['nombre'], 'archivo': os.path.basename(pv['archivo']),
+                                        'anadida': None, 'usuario': 'todas las obras', 'n_ofertas': 1, 'global': True})
     mats = []
     for m in r.materiales:
         fila = {'id': m.id, 'n': m.n, 'codigo': m.codigo, 'cap': m.ruta[-1] if m.ruta else '', 'primero': m.primero,
@@ -181,6 +195,7 @@ def datos_obra(o):
                          'suma': round(sum(p.importe_exacto for p in d.partidas() if p.precio is not None), 2),
                          'avisos': [a.texto for a in d.avisos if a.nivel != 'info'][:12]})
         lineas[pv['nombre']] = {'lineas': out, 'docs': docs, 'referencia': bool(pv.get('referencia')),
+                                'global': bool(pv.get('global')),
                                 'catalogo': bool(pv.get('catalogo'))}
     total_cli = round(sum(m.partida.importe for m in r.materiales if m.primero), 2)
     totales = {pv['nombre']: {'importe': round(sum(o.importe or 0 for o in pv['ofertas'].values()), 2),
@@ -309,6 +324,10 @@ class Sincronizador(threading.Thread):
                     _avisar_cambio(None, '%s %s' % (ev.get('usuario'), 'anotó un caso' if ev['tipo'] == 'caso' else
                                                      'enseñó una equivalencia' if ev['tipo'] == 'equivalencia' else
                                                      'olvidó un caso'), ev.get('usuario'))
+        mb = _marca_bases()
+        if self.marcas.get('__bases__', mb) != mb:
+            _avisar_cambio(None, 'Bases de precios actualizadas')
+        self.marcas['__bases__'] = mb
         for o in Obra.listar():
             m = o.marca()
             anterior = self.marcas.get(o.ident)
@@ -438,6 +457,13 @@ def servir(puerto=8765, abrir=True):
                                    'activa': C.compartida_activa(), 'en_uso': C.carpeta_compartida(),
                                    'local': C.carpeta_local(), 'sugerencias': C.sugerencias_carpeta(),
                                    'obras_locales': self._obras_locales()})
+            if ruta == '/api/bases':
+                from . import bases
+                return self._proteger(lambda: self._json([{k: b[k] for k in ('archivo', 'huella', 'origen', 'activa')}
+                                                          for b in bases.listar(todas=True)]))
+            m = re.fullmatch(r'/api/base/([0-9a-f]{20})/desglose', ruta)
+            if m:
+                return self._proteger(lambda: self._desglose_global(m.group(1)))
             if ruta == '/api/version':
                 from . import actualizar
                 return self._proteger(lambda: self._json(actualizar.estado()))
@@ -546,6 +572,16 @@ def servir(puerto=8765, abrir=True):
             self._enviar(200, b.getvalue(), 'application/zip',
                          {'Content-Disposition': "attachment; filename=\"pedidos.zip\"; filename*=UTF-8''%s" % quote(nombre)})
 
+        def _desglose_global(self, h):
+            from . import bases
+            from .exportadores import excel_base_precios
+            b = next((x for x in bases.listar(todas=True) if x['huella'] == h), None)
+            if not b:
+                raise ValueError('No existe esa base de precios.')
+            datos = self._generar(lambda tmp: excel_base_precios.escribir(b['ruta'], tmp))
+            self._descargar(datos, 'Desglose.%s.%s.xlsx' % (os.path.splitext(b['archivo'])[0],
+                                                             time.strftime('%d-%m-%Y')))
+
         def _desglose(self, o, huella_doc):
             of = next((x for x in o.estado['ofertas'] if x['huella'].startswith(huella_doc)), None)
             if not of:
@@ -593,6 +629,32 @@ def servir(puerto=8765, abrir=True):
                         raise ValueError('Solo se actualiza la app instalada (ahora se ejecuta desde el código fuente).')
                     self._json({'ok': True, 'mensaje': actualizar.actualizar_ahora()})
                 return self._proteger(act)
+            if ruta in ('/api/bases', '/api/bases/quitar'):
+                def bas():
+                    from . import bases
+                    if ruta == '/api/bases/quitar':
+                        bases.quitar(self._json_cuerpo()['huella'])
+                        msg = 'Base de precios quitada de todas las obras'
+                    else:
+                        partes = parsear_multipart(self.headers.get('Content-Type', ''), self._cuerpo())
+                        fich = [(f, v) for k, f, v in partes if f and v]
+                        if not fich:
+                            raise ValueError('No se ha recibido ningún fichero.')
+                        tmp = tempfile.mkdtemp(prefix='base_')
+                        try:
+                            for nombre_f, datos in fich:
+                                ruta_tmp = os.path.join(tmp, os.path.basename(nombre_f.replace('\\', '/')))
+                                with open(ruta_tmp, 'wb') as fh:
+                                    fh.write(datos)
+                                bases.anadir(ruta_tmp, os.path.basename(ruta_tmp))
+                        finally:
+                            shutil.rmtree(tmp, ignore_errors=True)
+                        msg = 'Base de precios añadida: aparece en todas las obras'
+                    with BLOQUEO:
+                        _CACHE.clear()
+                    _avisar_cambio(None, msg)
+                    self._json({'ok': True, 'mensaje': msg})
+                return self._proteger(bas)
             if ruta == '/api/config/llevar_obras':
                 def llevar():
                     with BLOQUEO:

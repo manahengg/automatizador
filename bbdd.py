@@ -180,6 +180,11 @@ class BBDD:
         self.c.commit()
         return len(filas)
 
+    def tiene_oferta(self, obra, proveedor, huella):
+        return self.c.execute('SELECT 1 FROM oferta o JOIN obra b ON b.id=o.obra_id JOIN proveedor p ON p.id=o.proveedor_id '
+                              'WHERE b.nombre=? AND lower(p.nombre)=lower(?) AND o.huella=? LIMIT 1',
+                              (obra, proveedor, huella)).fetchone() is not None
+
     def sincronizar_obra(self, obra, proveedores_vigentes, huellas_vigentes):
         """Borra de la BBDD local las ofertas de una obra que ya no están (quitadas o sustituidas por otra persona)."""
         vig = {p.lower() for p in proveedores_vigentes}

@@ -15,7 +15,7 @@ import uuid
 AQUI = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(AQUI)
 # documentos INVENTADOS (tests/ejemplos.py): el repositorio es público y no lleva documentos reales de obras
-JUNTA = os.path.join(REPO, 'obras', 'bases_precios', 'BASE_DE_DATOS_PRECIOS_JUNTA_EXTREM.xlsx')
+JUNTA = os.path.join(REPO, 'recursos', 'bases_precios', 'BASE_DE_DATOS_PRECIOS_JUNTA_EXTREMADURA_2026.xlsx')
 PUERTO = 8791
 BASE = 'http://127.0.0.1:%d' % PUERTO
 
@@ -165,16 +165,33 @@ def main():
     ls = d['lineas']['Proveedor Peticion']['lineas']
     comprobar(len(ls) == rellenas and all(l['mat'] for l in ls) and all(l['manual'] is False or l['mat'] for l in ls),
               'la petición rellena se casa entera por código (%d de %d)' % (sum(1 for l in ls if l['mat']), len(ls)))
-    # 9) base de precios de la Junta: referencia, no cuenta para el más barato ni el reparto
-    subir(O + '/proveedor', [JUNTA], {'proveedor': 'Junta Extremadura', 'sustituir': '0'})
+    # 9) base de precios de la Junta: presente en TODAS las obras sin subirla, como referencia
     d = pedir(O)
-    j = d['lineas']['Junta Extremadura']
-    comprobar(j['referencia'] and j['catalogo'] and 0 < len(j['lineas']) <= ejemplos.MATERIALES,
-              'la base de la Junta entra como referencia (%d artículos usados)' % len(j['lineas']))
-    comprobar(all(m['mejor']['prov'] != 'Junta Extremadura' for m in d['materiales']), 'la Junta no es "más barato"')
-    comprobar(d['reparto']['filas'] and all(x['proveedor'] != 'Junta Extremadura' for x in d['reparto']['filas']),
+    J = 'Junta Extremadura 2026'
+    j = d['lineas'].get(J)
+    comprobar(j is not None and j['global'] and j['referencia'] and 0 < len(j['lineas']) <= ejemplos.MATERIALES,
+              'la base de la Junta está en la obra sin subirla (%d artículos usados)' % (len(j['lineas']) if j else 0))
+    comprobar(any(p['nombre'] == J for p in d['proveedores']), 'la Junta sale como columna de proveedor')
+    comprobar(all(m['mejor']['prov'] != J for m in d['materiales']), 'la Junta no es "más barato" (no recibe pedidos)')
+    avisos_j = [a['t'] for m in d['materiales'] for a in (m['prov'].get(J) or {}).get('alertas', [])
+                if 'MÁS BARATO' in a['t'] or 'ningún distribuidor' in a['t']]
+    comprobar(avisos_j, 'aviso cuando la Junta es más barata o nadie más lo oferta (%d): %s'
+              % (len(avisos_j), avisos_j[0][:90] if avisos_j else ''))
+    pedir('/api/obras', {'nombre': 'Otra_obra', 'cod': 'E0002', 'cliente': 'X'})
+    subir('/api/obra/Otra_obra/cliente', [CLIENTE])
+    pedir('/api/obra/Otra_obra/capitulos', {'incluidos': todos})
+    comprobar(J in pedir('/api/obra/Otra_obra')['lineas'], 'y también en una obra nueva sin ofertas')
+    bs = pedir('/api/bases')
+    hj = next(b['huella'] for b in bs if b['origen'] == 'app')
+    pedir('/api/bases/quitar', {'huella': hj})
+    comprobar(J not in pedir(O)['lineas'], 'quitar la base de todas las obras')
+    subir_base = pedir('/api/bases', ficheros=[JUNTA])
+    comprobar(subir_base['ok'] and J in pedir(O)['lineas'], 'volver a activarla subiéndola')
+    reparto_filas = pedir(O)['reparto']['filas']
+    comprobar(reparto_filas and all(x['proveedor'] != J for x in reparto_filas),
               'reparto entre distribuidores: %s' % ', '.join('%s %.2f' % (x['proveedor'], x['importe'])
-                                                              for x in d['reparto']['filas']))
+                                                              for x in reparto_filas))
+    d = pedir(O)
     # 10) pedidos: al más barato en total (toda su oferta) y uno por distribuidor con sus materiales más baratos
     ganador = next(x for x in d['totales_prov'] if x['ganador'])
     comprobar(all(x['proveedor'] != 'Junta Extremadura' for x in d['totales_prov']), 'la Junta no recibe pedidos')
@@ -199,7 +216,7 @@ def main():
                 total_zip += c * p_
     comprobar(abs(total_zip - d['reparto']['total']) < 1.0, 'los pedidos del reparto suman lo mismo que el reparto '
                                                              '(%.2f / %.2f)' % (total_zip, d['reparto']['total']))
-    nom, xlsx = nombre_descarga(O + '/desglose/' + j['docs'][0]['huella'])
+    nom, xlsx = nombre_descarga('/api/base/%s/desglose' % hj)
     comprobar('Desglose' in nom and xlsx[:2] == b'PK', 'desglose de la base de precios: %s' % nom)
     print('TODO CORRECTO')
 

@@ -7,8 +7,7 @@ dist/
 /venv
 
 # documentos reales de obras: nunca al repositorio (es público)
-obras/*
-!obras/bases_precios/
+obras/
 ejemplos_prueba/
 *.backup*
 __pycache__/

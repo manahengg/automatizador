@@ -33,10 +33,12 @@ PDF escaneado o Excel) —al principio o en cualquier momento— y la app:
   para mandarlo a los proveedores (cantidad real de material, descripción completa, celdas amarillas para marca,
   referencia, precio y descuento; sin el nombre del cliente). Cuando el proveedor lo devuelve relleno se sube como
   oferta y **se casa solo por el código** de cada fila.
-- **Bases de precios** (p. ej. la de la Junta de Extremadura en Excel): se suben como un proveedor más y entran como
-  **referencia**: se comparan sus precios de material, pero no cuentan para el "más barato" ni para el reparto, y avisan
-  si los distribuidores están por encima. En Documentos, "⬇ Desglose" saca un Excel con cada partida separada en mano
-  de obra / materiales / maquinaria / %, los materiales con su precio y las incoherencias de la propia base.
+- **Bases de precios** (la de la Junta de Extremadura 2026 viene incluida con la app, `recursos/bases_precios/`): son un
+  proveedor de **referencia presente en TODAS las obras** sin subirlo. Tienen su columna, se casan solas con las partidas
+  y **avisan cuando su precio es más barato que el de cualquier distribuidor** (o cuando nadie más oferta ese material);
+  no cuentan para el "más bajo" ni reciben pedidos. Se añaden (p. ej. la de 2027) o se quitan de todas las obras en
+  "Base de datos de precios" y se comparten por la carpeta compartida (`bases_precios/`, `bases.py`). "⬇ Desglose"
+  saca cada partida separada en mano de obra / materiales / maquinaria / %, los materiales y las incoherencias.
 - **Reparto entre distribuidores**: comprando cada material al más barato, cuánto se le adjudica a cada distribuidor
   (en la pantalla y en la hoja Resumen del Excel).
 - **Pedidos** (caja "📦 Pedidos" en la comparativa): 1) pedido de **toda su oferta** al distribuidor con el total más
@@ -144,6 +146,5 @@ python -m automatizador bbdd "1x35 rz1-k"
 ## Ejemplos
 
 Los documentos reales de las obras (presupuestos de clientes y ofertas de proveedores) **no se guardan en el
-repositorio**, que es público: `obras/` está en `.gitignore` salvo `obras/bases_precios/` (base de precios pública de la
-Junta de Extremadura 2026). Las pruebas automáticas usan documentos inventados que genera `tests/ejemplos.py`
+repositorio**, que es público: `obras/` está en `.gitignore`. Las pruebas automáticas usan documentos inventados que genera `tests/ejemplos.py`
 (un presupuesto en Excel y ofertas en PDF, una de ellas escaneada para probar el OCR).

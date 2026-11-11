@@ -408,7 +408,26 @@ class Obra:
             por_cod.setdefault(clave_mat(m), m.id)
         conocidas = bbdd.conocidas() if bbdd else {}
         provs = []
-        for p in self.estado['proveedores']:
+        proveedores = list(self.estado['proveedores'])
+        # bases de precios globales (Junta...): proveedor de referencia presente en TODAS las obras
+        from . import bases as BASES
+        en_obra = {o['huella'] for p in proveedores for o in p['ofertas']}
+        for b in BASES.listar():
+            if b['huella'] in en_obra:
+                continue                                    # ya subida a mano en esta obra
+            try:
+                from .lectores import base_precios
+                doc_b = self._leer(b['ruta'], base_precios.leer, progreso)
+            except Exception as e:                          # una base rota no impide analizar la obra
+                avisar('No se pudo leer la base de precios %s: %s' % (b['archivo'], e))
+                continue
+            nombre_b = doc_b.proveedor or os.path.splitext(b['archivo'])[0]
+            if any(p['nombre'].lower() == nombre_b.lower() for p in proveedores):
+                continue
+            proveedores.append({'nombre': nombre_b, 'global': True, 'ofertas': [
+                {'proveedor': nombre_b, 'archivo': b['ruta'], 'huella': b['huella'], 'anadida': None,
+                 'usuario': 'base de precios (todas las obras)'}]})
+        for p in proveedores:
             avisar('Casando la oferta de %s con el presupuesto…' % p['nombre'])
             docs, lineas = [], []
             for of in p['ofertas']:
@@ -451,15 +470,23 @@ class Obra:
             ofertas = M.construir_ofertas(materiales, asign)
             provs.append({'nombre': p['nombre'], 'doc': docs[0]['doc'], 'docs': docs, 'lineas': lineas, 'asign': asign,
                           'sin': sin, 'ofertas': ofertas, 'puntos': puntos, 'archivo': docs[0]['archivo'],
-                          'huella': docs[0]['huella'], 'catalogo': catalogo,
+                          'huella': docs[0]['huella'], 'catalogo': catalogo, 'global': bool(p.get('global')),
                           'referencia': all((d['doc'].condiciones or {}).get('referencia') for d in docs)})
         res = Resultado(self, cli, materiales, provs)
         res.comparar_referencias()
         if bbdd:
             avisar('Guardando precios en la base de datos y buscando precios históricos…')
             por_id = {m.id: m for m in materiales}
-            bbdd.sincronizar_obra(self.nombre, [p['nombre'] for p in provs], {d['huella'] for p in provs for d in p['docs']})
+            bbdd.sincronizar_obra(self.nombre, [p['nombre'] for p in provs if not p['global']],
+                                  {d['huella'] for p in provs if not p['global'] for d in p['docs']})
             for pv in provs:
+                if pv['global']:                            # una sola vez en la BBDD, no en cada obra
+                    for d in pv['docs']:
+                        if not bbdd.tiene_oferta(BASES.OBRA_BBDD, pv['nombre'], d['huella']):
+                            bbdd.registrar_oferta(BASES.OBRA_BBDD, pv['nombre'], os.path.basename(d['archivo']),
+                                                  d['huella'], d['doc'], [l for l in pv['lineas']
+                                                                          if l.huella == d['huella']], {})
+                    continue
                 asignado = {a.linea.i: por_id[a.material_id] for a in pv['asign'] if a.tipo == 'principal'}
                 for d in pv['docs']:
                     bbdd.registrar_oferta(self.nombre, pv['nombre'], os.path.basename(d['archivo']), d['huella'], d['doc'],
@@ -479,6 +506,7 @@ class Resultado:
         self.historico = {}
         self.casos = {}          # material_id -> [(parecido, caso)]  correcciones aprendidas en casos parecidos
         self.optimo_fv = {}      # material_id -> [(coste, nº módulos, precio BBDD)]  mejor forma de llegar a los kWp
+        self.avisos_referencia = {}   # material_id -> [texto]  base de precios más barata que los distribuidores
 
     def avisos_aprendidos(self, m):
         """Textos de lo aprendido para el material m (casos anteriores y optimización por potencia)."""
@@ -513,14 +541,26 @@ class Resultado:
         return [pv for pv in self.proveedores if not pv.get('referencia')]
 
     def comparar_referencias(self):
-        """Avisa cuando el mejor distribuidor está por encima del precio de referencia (base de precios oficial)."""
+        """Base de precios (Junta...) MÁS BARATA que todos los distribuidores, o con precio para algo que nadie oferta:
+        se avisa como cuando la BBDD tiene registrado un precio mejor."""
+        self.avisos_referencia = {}
         for ref in [pv for pv in self.proveedores if pv.get('referencia')]:
             for mid, o in ref['ofertas'].items():
                 m = next((x for x in self.materiales if x.id == mid), None)
-                nom, mejor = self.mas_barato(m) if m else (None, None)
-                if o.precio and mejor and mejor > o.precio * 1.05:
-                    o.alertas.append(('baja', 'Precio de referencia %.2f €: el mejor distribuidor (%s, %.2f €) está un '
-                                              '%.0f%% por encima.' % (o.precio, nom, mejor, (mejor / o.precio - 1) * 100)))
+                if not m or not o.precio:
+                    continue
+                nom, mejor = self.mas_barato(m)
+                if mejor is None:
+                    t = ('%s tiene este material a %.2f € ("%s"); en esta obra ningún distribuidor lo ha ofertado.'
+                         % (ref['nombre'], o.precio, o.principal.partida.descripcion[:60]))
+                elif o.precio < mejor * 0.995:
+                    t = ('%s tiene este material a %.2f € ("%s"): MÁS BARATO que el mejor precio de los distribuidores '
+                         '(%s, %.2f €, un %.0f%% más caro).' % (ref['nombre'], o.precio, o.principal.partida.descripcion[:60],
+                                                                 nom, mejor, (mejor / o.precio - 1) * 100))
+                else:
+                    continue
+                o.alertas.append(('media', t))
+                self.avisos_referencia.setdefault(mid, []).append(t)
 
     def adjudicacion(self):
         """{distribuidor: [material_id...]}: cada material al distribuidor con el unitario más bajo (empate: el primero)."""
@@ -612,6 +652,11 @@ class Resultado:
                 if o and o.principal.referencia:
                     codigos.append((bbdd.proveedor_id(pv['nombre']), B.cod(o.principal.referencia)))
             filas = bbdd.precios_material(m, codigos, excluir_obra=self.obra.nombre)
+            if not filas:
+                continue
+            refs = {pv['nombre'].lower() for pv in self.proveedores if pv.get('referencia')}
+            # las bases de precios de la obra ya tienen su columna y su aviso: no se repiten como "histórico"
+            filas = [f for f in filas if f['proveedor'].lower() not in refs]
             if not filas:
                 continue
             ultimos = bbdd.mejor_por_proveedor(filas)
