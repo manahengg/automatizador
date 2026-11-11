@@ -32,6 +32,7 @@ from .app_html import PAGINA
 from .bbdd import BBDD
 from .obra import Obra, clave_mat, leer_cliente, ruta_bbdd
 from .exportadores import excel_comparativa, excel_peticion, excel_pedido
+from . import decisiones as D
 
 MAX_SUBIDA = 300 * 1024 * 1024
 BLOQUEO = threading.RLock()        # una operación pesada cada vez (OCR, análisis, escritura)
@@ -207,6 +208,30 @@ def datos_obra(o):
     base.update(materiales=mats, lineas=lineas, total_cliente=total_cli, totales=totales,
                 cliente_nombre=r.cliente.nombre, avisos_cliente=[a.texto for a in r.cliente.avisos if a.nivel != 'info'])
     return base
+
+
+def _decision_fijar(o, r, pv, l, mat):
+    """Casar (mat) o descasar (mat None) a mano la línea l: se registra con lo que la app había propuesto."""
+    mats = {m.id: m for m in r.materiales}
+    a_antes = next((a for a in pv['asign'] if a.linea.uid == l.uid), None)
+    antes = mats.get(a_antes.material_id) if a_antes else None
+    if mat is not None:
+        cands = sorted(((x, sc) for x in pv['lineas'] for sc, mid in (pv['puntos'].get(x.i) or []) if mid == mat.id),
+                       key=lambda t: -t[1])
+        sc = next((s for x, s in cands if x.uid == l.uid), None)
+        D.registrar(db(), 'casar', o.nombre, pv['nombre'], [D.item(mat, l, cands, antes, sc)])
+    elif antes is not None:
+        D.registrar(db(), 'descasar', o.nombre, pv['nombre'], [D.item(antes, l, puntuacion=a_antes.puntuacion)])
+
+
+def _decision_pedido(o, r, prov, ids):
+    """Lo que se pide a un proveedor cuenta como emparejamiento aceptado."""
+    pv = next(p for p in r.proveedores if p['nombre'] == prov)
+    items = [D.item(m, pv['ofertas'][m.id].principal, puntuacion=pv['ofertas'][m.id].puntuacion)
+             for m in r.materiales if m.id in pv['ofertas'] and (ids is None or m.id in ids)
+             and pv['ofertas'][m.id].precio is not None]
+    if items:
+        D.registrar(db(), 'pedido', o.nombre, prov, items)
 
 
 TRABAJOS = {}          # id -> Trabajo (subidas en curso, para la barra de progreso)
@@ -464,6 +489,9 @@ def servir(puerto=8765, abrir=True):
             m = re.fullmatch(r'/api/base/([0-9a-f]{20})/desglose', ruta)
             if m:
                 return self._proteger(lambda: self._desglose_global(m.group(1)))
+            if ruta == '/api/decisiones':
+                texto = (q.get('q') or [''])[0]
+                return self._proteger(lambda: self._json(db().decisiones(texto)))
             if ruta == '/api/version':
                 from . import actualizar
                 return self._proteger(lambda: self._json(actualizar.estado()))
@@ -549,6 +577,7 @@ def servir(puerto=8765, abrir=True):
             else:
                 ids, motivo, tipo = None, 'Pedido según su oferta completa.', 'Pedido_%s' % prov
             datos = self._generar(lambda ruta: excel_pedido.escribir(r, prov, ruta, ids, o.estado.get('datos') or {}, motivo))
+            _decision_pedido(o, r, prov, ids)
             self._descargar(datos, o.nombre_excel(tipo))
 
         def _pedidos_reparto(self, o):
@@ -567,6 +596,9 @@ def servir(puerto=8765, abrir=True):
                             'Pedido de los materiales en los que su oferta es la más económica.')))
             if not any(adj.values()):
                 raise ValueError('No hay ofertas de distribuidores con precio.')
+            for prov, ids in adj.items():
+                if ids:
+                    _decision_pedido(o, r, prov, set(ids))
             from urllib.parse import quote
             nombre = o.nombre_excel('Pedidos_reparto')[:-5] + '.zip'
             self._enviar(200, b.getvalue(), 'application/zip',
@@ -622,6 +654,12 @@ def servir(puerto=8765, abrir=True):
                     _avisar_cambio(None, 'Configuración cambiada')
                     self._json({'ok': True})
                 return self._proteger(cfg)
+            if ruta == '/api/decisiones/olvidar':
+                def olv():
+                    D.olvidar(db(), self._json_cuerpo()['uid'])
+                    _CACHE.clear()
+                    self._json({'ok': True})
+                return self._proteger(olv)
             if ruta == '/api/actualizar':
                 def act():
                     from . import actualizar
@@ -674,7 +712,7 @@ def servir(puerto=8765, abrir=True):
                     o = Obra.crear(d.get('nombre', ''), (d.get('cod') or '').strip(), (d.get('cliente') or '').strip())
                     self._json({'id': o.ident})
                 return self._proteger(crear)
-            m = re.fullmatch(r'/api/obra/([^/]+)/(cliente|proveedor|quitar|quitar_oferta|quitar_cliente|fijar|deshacer|reanalizar|caso|capitulos|datos)', ruta)
+            m = re.fullmatch(r'/api/obra/([^/]+)/(cliente|proveedor|quitar|quitar_oferta|quitar_cliente|fijar|deshacer|reanalizar|caso|capitulos|datos|aceptar)', ruta)
             if not m:
                 return self._error(404, 'No encontrado.')
             accion = m.group(2)
@@ -708,12 +746,32 @@ def servir(puerto=8765, abrir=True):
                         mat = next((x for x in r.materiales if x.id == datos.get('material')), None)
                         o.fijar(datos['proveedor'], datos['linea'], datos.get('material') or None,
                                 clave_mat(mat) if mat else None)
+                        pv = next(p for p in r.proveedores if p['nombre'] == datos['proveedor'])
+                        l = next(x for x in pv['lineas'] if x.uid == str(datos['linea']))
+                        _decision_fijar(o, r, pv, l, mat)
                         if mat:
-                            pv = next(p for p in r.proveedores if p['nombre'] == datos['proveedor'])
-                            l = next(x for x in pv['lineas'] if x.uid == str(datos['linea']))
                             db().aprender(datos['proveedor'], l, mat)
                     elif accion == 'deshacer':
                         o.deshacer(datos['proveedor'], datos['linea'])
+                        for u in db().c.execute("SELECT uid, datos FROM decision WHERE obra=? AND proveedor=? AND activo=1 "
+                                                "AND accion IN ('casar','descasar')", (o.nombre, datos['proveedor'])).fetchall():
+                            if ((json.loads(u['datos']).get('linea') or {}).get('uid')) == str(datos['linea']):
+                                D.olvidar(db(), u['uid'])
+                        _CACHE.clear()
+                    elif accion == 'aceptar':
+                        r = analisis(o)
+                        n = 0
+                        for pv in r.distribuidores:
+                            if datos.get('proveedor') and pv['nombre'] != datos['proveedor']:
+                                continue
+                            ids = [datos['material']] if datos.get('material') else list(pv['ofertas'])
+                            items = [D.item(m, pv['ofertas'][m.id].principal, puntuacion=pv['ofertas'][m.id].puntuacion)
+                                     for m in r.materiales if m.id in ids and m.id in pv['ofertas']]
+                            if items:
+                                D.registrar(db(), 'aceptar', o.nombre, pv['nombre'], items)
+                                n += len(items)
+                        _CACHE.clear()
+                        return self._json({'ok': True, 'mensaje': '%d casamiento(s) aceptado(s): la app aprende de ellos' % n})
                     elif accion == 'quitar_oferta':
                         o.quitar_oferta(datos['huella'])
                     elif accion == 'quitar_cliente':

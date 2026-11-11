@@ -114,15 +114,26 @@ def main():
     l2 = next(l for l in pedir(O)['lineas']['Electrofil']['lineas'] if l['uid'] == libre['uid'])
     comprobar(l2['mat'] == destino and l2['manual'], 'casar a mano una línea sin asignar')
     comprobar(pedir('/api/bbdd?q=x')['resumen']['equivalencias'] > 0, 'la corrección se aprende en la BBDD')
+    ds = pedir('/api/decisiones')
+    comprobar(len(ds) == 1 and ds[0]['accion'] == 'casar' and ds[0]['proveedor'] == 'Electrofil',
+              'la decisión se registra con su contexto (fase 0)')
     # 2) deshacer
     pedir(O + '/deshacer', {'proveedor': 'Electrofil', 'linea': libre['uid']})
     l3 = next(l for l in pedir(O)['lineas']['Electrofil']['lineas'] if l['uid'] == libre['uid'])
     comprobar(not l3['manual'], 'deshacer la corrección')
+    comprobar(not pedir('/api/decisiones'), 'deshacer olvida también la decisión')
     # 3) "no casar" una línea casada
     casada = next(l for l in lineas if l['mat'])
     pedir(O + '/fijar', {'proveedor': 'Electrofil', 'linea': casada['uid'], 'material': ''})
     l4 = next(l for l in pedir(O)['lineas']['Electrofil']['lineas'] if l['uid'] == casada['uid'])
     comprobar(l4['mat'] is None and l4['manual'], 'marcar una línea como "no casar"')
+    comprobar([x['accion'] for x in pedir('/api/decisiones')] == ['descasar'], 'se registra el "no casar"')
+    con_of = next(m['id'] for m in pedir(O)['materiales'] if 'Electrofil' in m['prov'])
+    r_ac = pedir(O + '/aceptar', {'material': con_of})
+    comprobar(r_ac['ok'] and any(x['accion'] == 'aceptar' for x in pedir('/api/decisiones')), '✔ Aceptar: %s' % r_ac['mensaje'])
+    u = next(x['uid'] for x in pedir('/api/decisiones') if x['accion'] == 'aceptar')
+    pedir('/api/decisiones/olvidar', {'uid': u})
+    comprobar(all(x['accion'] != 'aceptar' for x in pedir('/api/decisiones')), 'olvidar una decisión')
     # 4) quitar una de las dos ofertas
     pedir(O + '/quitar_oferta', {'huella': docs[1]['huella']})
     d = pedir(O)
@@ -214,6 +225,8 @@ def main():
             c, p_ = ws.cell(r, XP.C_CANT).value, ws.cell(r, XP.C_PRECIO).value
             if isinstance(c, (int, float)) and isinstance(p_, (int, float)) and ws.cell(r, 1).value:
                 total_zip += c * p_
+    n_ped = sum(1 for x in pedir('/api/decisiones') if x['accion'] == 'pedido')
+    comprobar(n_ped >= len(ejemplos.PARTIDAS) // 2, 'lo pedido cuenta como aceptado (%d decisiones)' % n_ped)
     comprobar(abs(total_zip - d['reparto']['total']) < 1.0, 'los pedidos del reparto suman lo mismo que el reparto '
                                                              '(%.2f / %.2f)' % (total_zip, d['reparto']['total']))
     nom, xlsx = nombre_descarga('/api/base/%s/desglose' % hj)

@@ -83,6 +83,18 @@ CREATE TABLE IF NOT EXISTS caso (
 CREATE TABLE IF NOT EXISTS importado (
     id TEXT PRIMARY KEY             -- eventos de la carpeta compartida ya aplicados en esta BBDD local
 );
+CREATE TABLE IF NOT EXISTS decision (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uid TEXT UNIQUE,                -- id del evento compartido + nº de item
+    cuando TEXT, usuario TEXT,
+    accion TEXT NOT NULL,           -- casar | descasar | aceptar | pedido
+    obra TEXT, proveedor TEXT,
+    mat_codigo TEXT, mat_texto TEXT, mat_familia TEXT, mat_clave TEXT, mat_key TEXT,
+    linea_ref TEXT, linea_desc TEXT, linea_familia TEXT, linea_key TEXT, precio REAL,
+    datos TEXT,                     -- JSON completo (material, línea, candidatos, lo que había antes)
+    activo INTEGER DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS ix_decision_mat ON decision(mat_key);
 CREATE TABLE IF NOT EXISTS equivalencia (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     proveedor_id INTEGER NOT NULL REFERENCES proveedor(id),
@@ -236,6 +248,15 @@ class BBDD:
                            (ev['cuando'], d.get('obra'), d.get('proveedor'), d.get('familia'), d.get('clave_material'),
                             d.get('atributos'), d.get('texto_material'), d.get('oferta'), d['observacion'],
                             d.get('cantidad_correcta'), ev['id'], ev.get('usuario')))
+        elif t == 'decision':
+            from . import decisiones as D
+            for f in D.filas_de_evento(ev):
+                cols = list(f)
+                self.c.execute('INSERT OR IGNORE INTO decision (%s) VALUES (%s)' % (','.join(cols), ','.join('?' * len(cols))),
+                               [f[k] for k in cols])
+        elif t == 'decision_olvidada':
+            u = d['uid']
+            self.c.execute('UPDATE decision SET activo=0 WHERE uid=? OR uid LIKE ?', (u, u + ':%'))
         elif t == 'caso_borrado':
             self.c.execute('UPDATE caso SET activo=0 WHERE uid=?', (d['uid'],))
         self.c.execute('INSERT OR IGNORE INTO importado (id) VALUES (?)', (ev['id'],))
@@ -384,6 +405,17 @@ class BBDD:
                 out[(r['proveedor'], wp)] = dict(r, wp=wp)
         return list(out.values())
 
+    def decisiones(self, texto='', limite=500, solo_activas=True):
+        conds, args = [], []
+        if solo_activas:
+            conds.append('activo=1')
+        for w in E.norm(texto).split():
+            conds.append("(lower(ifnull(mat_texto,'')||' '||ifnull(mat_codigo,'')||' '||ifnull(linea_desc,'')||' '||"
+                         "ifnull(proveedor,'')||' '||ifnull(obra,'')) LIKE ?)")
+            args.append('%' + w + '%')
+        sql = 'SELECT * FROM decision' + (' WHERE ' + ' AND '.join(conds) if conds else '') + ' ORDER BY cuando DESC LIMIT ?'
+        return [dict(r) for r in self.c.execute(sql, args + [limite])]
+
     def resumen(self):
         return {
             'proveedores': self.c.execute('SELECT COUNT(*) FROM proveedor').fetchone()[0],
@@ -391,4 +423,5 @@ class BBDD:
             'precios': self.c.execute('SELECT COUNT(*) FROM precio').fetchone()[0],
             'equivalencias': self.c.execute('SELECT COUNT(*) FROM equivalencia').fetchone()[0],
             'casos': self.c.execute('SELECT COUNT(*) FROM caso WHERE activo=1').fetchone()[0],
+            'decisiones': self.c.execute('SELECT COUNT(*) FROM decision WHERE activo=1').fetchone()[0],
         }
