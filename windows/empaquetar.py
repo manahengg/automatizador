@@ -63,6 +63,17 @@ def main(destino):
     # 4) código de la app
     shutil.copytree(REPO, dapp, ignore=lambda d, nombres: [n for n in nombres if n in EXCLUIR or n.endswith('.pyc')])
     shutil.copy2(os.path.join(REPO, 'windows', 'icono.ico'), os.path.join(destino, 'icono.ico'))
+    # versión instalada (para las actualizaciones automáticas, ver actualizar.py)
+    try:
+        sha, fecha, msg = subprocess.check_output(['git', '-C', REPO, 'log', '-1', '--format=%H%n%cI%n%s'],
+                                                  text=True, encoding='utf-8').split('\n')[:3]
+        rama = os.environ.get('GITHUB_REF_NAME') or subprocess.check_output(
+            ['git', '-C', REPO, 'rev-parse', '--abbrev-ref', 'HEAD'], text=True).strip()
+        import json
+        with open(os.path.join(dapp, 'VERSION.json'), 'w', encoding='utf-8') as f:
+            json.dump({'sha': sha, 'fecha': fecha, 'mensaje': msg, 'rama': rama}, f, ensure_ascii=False, indent=1)
+    except (OSError, subprocess.CalledProcessError, ValueError) as e:
+        print('Aviso: sin VERSION.json (%s)' % e)
     # 5) instalación sin .exe propio: Instalar.bat -> python.exe oficial + windows/instalar.py
     for f in ('Instalar.bat', 'Abrir Comparador.bat'):
         with open(os.path.join(REPO, 'windows', f), encoding='ascii') as e, \

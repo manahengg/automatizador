@@ -430,6 +430,9 @@ def servir(puerto=8765, abrir=True):
                                    'activa': C.compartida_activa(), 'en_uso': C.carpeta_compartida(),
                                    'local': C.carpeta_local(), 'sugerencias': C.sugerencias_carpeta(),
                                    'obras_locales': self._obras_locales()})
+            if ruta == '/api/version':
+                from . import actualizar
+                return self._proteger(lambda: self._json(actualizar.estado()))
             if ruta == '/api/casos':
                 return self._proteger(lambda: self._json(db().casos()))
             if ruta == '/api/bbdd':
@@ -524,6 +527,11 @@ def servir(puerto=8765, abrir=True):
             if ruta == '/api/config':
                 def cfg():
                     d = self._json_cuerpo()
+                    if set(d) <= {'token_github', 'rama_actualizaciones'}:      # solo opciones de actualización
+                        C.guardar_config(token_github=d.get('token_github'), rama_actualizaciones=d.get('rama_actualizaciones'))
+                        from . import actualizar
+                        actualizar._ULTIMA['cuando'] = None
+                        return self._json({'ok': True})
                     with BLOQUEO:
                         C.guardar_config(d.get('carpeta_compartida'), d.get('usuario'))
                         _CACHE.clear()
@@ -532,6 +540,13 @@ def servir(puerto=8765, abrir=True):
                     _avisar_cambio(None, 'Configuración cambiada')
                     self._json({'ok': True})
                 return self._proteger(cfg)
+            if ruta == '/api/actualizar':
+                def act():
+                    from . import actualizar
+                    if not actualizar.instalado():
+                        raise ValueError('Solo se actualiza la app instalada (ahora se ejecuta desde el código fuente).')
+                    self._json({'ok': True, 'mensaje': actualizar.actualizar_ahora()})
+                return self._proteger(act)
             if ruta == '/api/config/llevar_obras':
                 def llevar():
                     with BLOQUEO:

@@ -232,9 +232,24 @@ async function irConfig(){OBRA=null;$('#titulo').textContent='Configuración';co
  <div class="fila" style="margin-top:8px"><b>Tu nombre:</b><input type="text" id="cfgUsuario" value="${esc(c.usuario)}" size="30"><span class="peq">Aparece en el historial de cada obra y en los casos que anotes.</span></div>
  <div class="fila" style="margin-top:10px"><button class="prim" onclick="guardarConfig()">Guardar</button><span class="peq">Estado: ${c.activa?'<b>compartido</b> — trabajando en '+esc(c.en_uso):'solo este PC ('+esc(c.en_uso)+')'}</span></div>
  ${c.obras_locales.length?`<div class="caja" style="background:#fff8e5">Tienes ${c.obras_locales.length} obra(s) creadas antes solo en este PC (${c.obras_locales.map(esc).join(', ')}). <button onclick="llevarObras()">Copiarlas a la carpeta compartida</button></div>`:''}
- <p class="peq">Cómo funciona: en la carpeta compartida nunca se modifica un fichero, solo se crean ficheros nuevos (uno por acción), así OneDrive no genera conflictos aunque varias personas trabajen a la vez en la misma obra. Cada PC mantiene su base de datos de precios local, que se completa sola con lo de todos. Base local: ${esc(c.local)}</p></div>`}
+ <p class="peq">Cómo funciona: en la carpeta compartida nunca se modifica un fichero, solo se crean ficheros nuevos (uno por acción), así OneDrive no genera conflictos aunque varias personas trabajen a la vez en la misma obra. Cada PC mantiene su base de datos de precios local, que se completa sola con lo de todos. Base local: ${esc(c.local)}</p></div>
+ <div class="caja" id="cajaAct"><h3 style="margin-top:0">Actualizaciones</h3><p class="peq">Comprobando…</p></div>`;pintarActualizacion()}
+async function pintarActualizacion(){let v;try{v=await api('/api/version')}catch(e){return}const el=$('#cajaAct');if(!el)return;
+ const ver=v.version||{};const disp=v.disponible;
+ el.innerHTML=`<h3 style="margin-top:0">Actualizaciones</h3>
+ <p>Versión instalada: <b>${ver.fecha?esc(ver.fecha.slice(0,16).replace('T',' ')):'desconocida'}</b> ${ver.sha?'('+esc(ver.sha.slice(0,7))+')':''} ${ver.mensaje?'— '+esc(ver.mensaje):''} · rama <b>${esc(v.rama)}</b></p>
+ ${!v.instalada?'<p class="peq">Ejecutando desde el código fuente: las actualizaciones automáticas solo se aplican en la app instalada.</p>':''}
+ ${disp?`<div class="caja" style="background:#e8f5e9">Hay una versión nueva: <b>${esc((disp.fecha||'').slice(0,16).replace('T',' '))}</b> ${esc(disp.mensaje||'')} <span class="peq">(${disp.origen=='compartida'?'desde la carpeta compartida':'desde GitHub'})</span> <button class="prim" onclick="actualizarYa()">⬇ Instalar ahora</button></div>`:(v.instalada&&!v.error?'<p>✔ Tienes la última versión.</p>':'')}
+ ${v.error?`<div class="alerta">${esc(v.error)}</div>`:''}
+ <p class="peq">La app se actualiza sola <b>al abrirla</b>: descarga solo el código (unos cientos de KB) de GitHub y lo deja también en la carpeta compartida, para que los demás PCs lo tomen de ahí. Solo hay que volver a instalar el ZIP completo si una versión necesita librerías nuevas (la app lo avisa).</p>
+ <details><summary class="peq">Opciones avanzadas</summary><div class="fila" style="margin-top:6px"><b>Rama:</b><input type="text" id="cfgRama" value="${esc(v.rama)}" size="30">
+ <b>Token de GitHub</b> <span class="peq">(solo si el repositorio es privado)</span>:<input type="password" id="cfgToken" size="30" placeholder="${v.tiene_token?'(guardado)':'github_pat_…'}">
+ <button onclick="guardarAct()">Guardar</button></div></details>`}
+async function guardarAct(){try{const d={rama_actualizaciones:$('#cfgRama').value};if($('#cfgToken').value)d.token_github=$('#cfgToken').value;await api('/api/config',{method:'POST',body:JSON.stringify(d)});aviso('Guardado');pintarActualizacion()}catch(e){aviso(e.message,1)}}
+async function actualizarYa(){cargando(true,'Descargando e instalando la versión nueva…');try{const j=await api('/api/actualizar',{method:'POST',body:'{}'});cargando(false);OCUPADO=true;alert(j.mensaje);OCUPADO=false;pintarActualizacion()}catch(e){cargando(false);aviso(e.message,1)}}
+async function avisoActualizacion(){try{const v=await api('/api/version');if(v.disponible)aviso('Hay una versión nueva de la app: se instala sola al volver a abrirla (o en ⚙ Configuración → Instalar ahora).')}catch(e){}}
 async function guardarConfig(){cargando(true,'Guardando y sincronizando…');try{await api('/api/config',{method:'POST',body:JSON.stringify({carpeta_compartida:$('#cfgCarpeta').value,usuario:$('#cfgUsuario').value})});cargando(false);aviso('Configuración guardada');estadoCompartido();irConfig()}catch(e){cargando(false);aviso(e.message,1)}}
 async function llevarObras(){cargando(true);try{const j=await api('/api/config/llevar_obras',{method:'POST',body:'{}'});cargando(false);aviso(j.mensaje);irConfig()}catch(e){cargando(false);aviso(e.message,1)}}
-estadoCompartido();irInicio();sondear();
+estadoCompartido();irInicio();sondear();setTimeout(avisoActualizacion,4000);
 </script></body></html>
 """

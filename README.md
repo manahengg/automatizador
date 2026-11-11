@@ -52,6 +52,13 @@ PDF escaneado o Excel) —al principio o en cualquier momento— y la app:
    PC": *Más información* → *Ejecutar de todas formas*.
 4. Al abrirla aparece una ventana negra (es el servidor; no la cierres mientras uses la app) y se abre el navegador.
 
+**Actualizaciones automáticas:** el ZIP solo hay que instalarlo una vez. Después, cada vez que se abre, la app mira si
+hay una versión nueva en GitHub (de la misma rama con la que se construyó el ZIP; se puede cambiar en ⚙ Configuración →
+Actualizaciones) y se actualiza sola: descarga solo el código (unos cientos de KB) y lo deja también en la carpeta
+compartida para los demás PCs (`actualizaciones/`). Si una versión necesita librerías nuevas, la app avisa de que hay que
+instalar el ZIP completo; si una versión nueva no arranca, vuelve sola a la anterior (`actualizar.py`). Si el
+repositorio vuelve a ser privado, basta con poner un token de GitHub de solo lectura en un PC.
+
 **Por qué no hay un .exe ni un instalador .exe:** Windows 11 (Smart App Control / Control de aplicaciones) bloquea
 los ejecutables sin firma digital (error *"código 4551"*), también el instalador de Inno Setup, que se extrae y
 ejecuta desde la carpeta temporal. El ZIP lleva el **Python embebido oficial de python.org, firmado**, las librerías

@@ -46,8 +46,27 @@ def main():
     os.environ.setdefault('AUTOMATIZADOR_DATOS', os.path.join(base, 'ComparadorOfertas'))
     if os.name == 'nt':
         os.system('title Comparador de ofertas - NO CIERRES ESTA VENTANA mientras uses la app')
+    actualizado = False
+    try:
+        from automatizador import actualizar
+        msg = actualizar.al_arrancar()
+        if msg:
+            print(msg + '\n')
+            actualizado = msg.startswith('Actualizado')
+    except Exception as e:
+        print('No se pudo comprobar si hay actualizaciones: %s\n' % e)
     comprobar_librerias()
-    from automatizador.app_web import servir
+    try:
+        from automatizador.app_web import servir
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        if not (actualizado and actualizar.revertir()):
+            raise
+        print('\nLa versión nueva no arranca: se vuelve a la anterior.\n')
+        for k in [k for k in sys.modules if k.startswith('automatizador.')]:
+            del sys.modules[k]
+        from automatizador.app_web import servir
     print('Comparador de ofertas de material eléctrico')
     print('Para cerrar la app cierra esta ventana.\n')
     servir(puerto_libre(), abrir='--no-abrir' not in sys.argv)

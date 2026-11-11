@@ -45,8 +45,12 @@ def config():
     return c
 
 
-def guardar_config(carpeta=None, usuario=None):
+def guardar_config(carpeta=None, usuario=None, **extra):
+    """extra: token_github, rama_actualizaciones (solo en este PC: el token NO va a la carpeta compartida)."""
     c = config()
+    for k in ('token_github', 'rama_actualizaciones'):
+        if extra.get(k) is not None:
+            c[k] = extra[k].strip()
     if carpeta is not None:
         carpeta = carpeta.strip().strip('"')
         if carpeta:
