@@ -32,21 +32,26 @@ F_CAB = Font(name=FUENTE, size=9, bold=True, color='FFFFFF')
 F_ALERTA = Font(name=FUENTE, size=9, color='C00000')
 F_GRIS = Font(name=FUENTE, size=8, italic=True, color='666666')
 R_CAB = PatternFill('solid', fgColor='1F4E78')
-# colores de cabecera de los proveedores: sin verdes, amarillos ni naranjas, que son los de los AVISOS
-R_PROV = ['2E75B6', '7030A0', '00808C', '44546A', 'A5527A', '2F5597', '7F6084', '5B7B9A']
-C_CLIENTE, C_FINAL = '1F4E78', '3B3838'
-
-
-def tono(hex_color, f=0.88):
-    """Versión muy clara del color de una cabecera, para el fondo de las celdas de su bloque."""
-    r, g, b = (int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
-    return PatternFill('solid', fgColor='%02X%02X%02X' % tuple(round(c + (255 - c) * f) for c in (r, g, b)))
+# (cabecera, fondo de las celdas) de cada bloque: tonos bien distintos entre sí y sin verdes, amarillos ni naranjas,
+# que son los colores de los AVISOS. Los cuatro primeros proveedores son los más distintos (lo habitual es 2-4).
+P_CLIENTE = ('7A5C3A', 'F2E8D8')          # marrón tierra / arena
+P_FINAL = ('3B3838', 'E6E6E6')            # gris
+P_PROV = [('1F5FAD', 'D6E4F7'),           # azul
+          ('7030A0', 'E8D9F4'),           # morado / lila
+          ('0E7C9B', 'CFEAF2'),           # turquesa / celeste
+          ('B0336E', 'F7D9E8'),           # magenta / rosa
+          ('4A6274', 'DFE6EC'),           # pizarra
+          ('6B5B4E', 'E8E2DC'),           # topo
+          ('3F3F9F', 'DEDEF4'),           # índigo
+          ('8B2252', 'EFD5E1')]           # vino
+R_PROV = [c for c, _ in P_PROV]
+C_CLIENTE, C_FINAL = P_CLIENTE[0], P_FINAL[0]
 R_SUB = PatternFill('solid', fgColor='D9E1F2')
 R_TOTAL = PatternFill('solid', fgColor='B4C6E7')
 R_VERDE = PatternFill('solid', fgColor='C6EFCE')
 R_AMARILLO = PatternFill('solid', fgColor='FFF2CC')
 R_NARANJA = PatternFill('solid', fgColor='F8CBAD')
-R_PARTIDA = tono(C_CLIENTE, 0.80)       # partida con varios materiales (un poco más oscuro que el bloque del cliente)
+R_PARTIDA = PatternFill('solid', fgColor='E6D6BD')   # partida con varios materiales: arena algo más oscura
 FINO = Side(style='thin', color='BFBFBF')
 BORDE = Border(left=FINO, right=FINO, top=FINO, bottom=FINO)
 EUR = '#,##0.00 €;-#,##0.00 €;"-"'
@@ -56,6 +61,7 @@ DIFCANT = '"+"#,##0.##;"−"#,##0.##;"="'
 ENVOLVER = Alignment(wrap_text=True, vertical='top')
 ARRIBA = Alignment(vertical='top')
 CENTRO = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
 
 FIJAS = ['Capítulo', 'Nº licit.', 'Código cliente', 'Descripción cliente (partida)', 'Material a comprar (interpretado)',
          'Ud', 'Cant. partida', 'Cant. material', 'Precio cliente', 'Importe cliente']
@@ -113,9 +119,9 @@ def escribir(res, ruta):
     ws['A3'].alignment = ENVOLVER
     F_HDR, F_COL = 5, 6
     for i, t in enumerate(FIJAS, 1):
-        _cab(ws, F_COL, i, t, R_CAB)
+        _cab(ws, F_COL, i, t, PatternFill('solid', fgColor=C_CLIENTE))
     ws.merge_cells(start_row=F_HDR, start_column=1, end_row=F_HDR, end_column=len(FIJAS))
-    _cab(ws, F_HDR, 1, 'PRESUPUESTO DEL CLIENTE', R_CAB)
+    _cab(ws, F_HDR, 1, 'PRESUPUESTO DEL CLIENTE', PatternFill('solid', fgColor=C_CLIENTE))
     for k, pv in enumerate(provs):
         relleno = PatternFill('solid', fgColor=R_PROV[k % len(R_PROV)])
         for j, t in enumerate(BLOQUE):
@@ -133,12 +139,12 @@ def escribir(res, ruta):
     for j in range(len(FINALES)):
         _cab(ws, F_COL, c_fin + j, FINALES[j], PatternFill('solid', fgColor=C_FINAL))
     # fondo de cada bloque: tono claro del color de su cabecera (los avisos se pintan antes y no se tocan)
-    fondo = {c: tono(C_CLIENTE) for c in range(1, len(FIJAS) + 1)}
+    fondo = {c: PatternFill('solid', fgColor=P_CLIENTE[1]) for c in range(1, len(FIJAS) + 1)}
     for k in range(np_):
         for j in range(len(BLOQUE)):
-            fondo[c_ini[k] + j] = tono(R_PROV[k % len(R_PROV)])
+            fondo[c_ini[k] + j] = PatternFill('solid', fgColor=P_PROV[k % len(P_PROV)][1])
     for j in range(len(FINALES)):
-        fondo[c_fin + j] = tono(C_FINAL, 0.92)
+        fondo[c_fin + j] = PatternFill('solid', fgColor=P_FINAL[1])
     _cab(ws, F_COL, c_nivel1, 'Capítulo nivel 1', R_CAB)
     _cab(ws, F_COL, c_capfila, 'Capítulo (fila)', R_CAB)
     ws.row_dimensions[F_COL].height = 30
