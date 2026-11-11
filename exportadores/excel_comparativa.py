@@ -32,13 +32,21 @@ F_CAB = Font(name=FUENTE, size=9, bold=True, color='FFFFFF')
 F_ALERTA = Font(name=FUENTE, size=9, color='C00000')
 F_GRIS = Font(name=FUENTE, size=8, italic=True, color='666666')
 R_CAB = PatternFill('solid', fgColor='1F4E78')
-R_PROV = ['2E75B6', '548235', 'BF8F00', '7030A0', 'C55A11', '2F5597', '806000', '375623']
+# colores de cabecera de los proveedores: sin verdes, amarillos ni naranjas, que son los de los AVISOS
+R_PROV = ['2E75B6', '7030A0', '00808C', '44546A', 'A5527A', '2F5597', '7F6084', '5B7B9A']
+C_CLIENTE, C_FINAL = '1F4E78', '3B3838'
+
+
+def tono(hex_color, f=0.88):
+    """Versión muy clara del color de una cabecera, para el fondo de las celdas de su bloque."""
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+    return PatternFill('solid', fgColor='%02X%02X%02X' % tuple(round(c + (255 - c) * f) for c in (r, g, b)))
 R_SUB = PatternFill('solid', fgColor='D9E1F2')
 R_TOTAL = PatternFill('solid', fgColor='B4C6E7')
 R_VERDE = PatternFill('solid', fgColor='C6EFCE')
 R_AMARILLO = PatternFill('solid', fgColor='FFF2CC')
 R_NARANJA = PatternFill('solid', fgColor='F8CBAD')
-R_PARTIDA = PatternFill('solid', fgColor='F2F2F2')
+R_PARTIDA = tono(C_CLIENTE, 0.80)       # partida con varios materiales (un poco más oscuro que el bloque del cliente)
 FINO = Side(style='thin', color='BFBFBF')
 BORDE = Border(left=FINO, right=FINO, top=FINO, bottom=FINO)
 EUR = '#,##0.00 €;-#,##0.00 €;"-"'
@@ -121,7 +129,16 @@ def escribir(res, ruta):
     for j, t in enumerate(FINALES):
         _cab(ws, F_COL, c_fin + j, t, R_CAB)
     ws.merge_cells(start_row=F_HDR, start_column=c_fin, end_row=F_HDR, end_column=c_fin + len(FINALES) - 1)
-    _cab(ws, F_HDR, c_fin, 'MEJOR OPCIÓN', R_CAB)
+    _cab(ws, F_HDR, c_fin, 'MEJOR OPCIÓN', PatternFill('solid', fgColor=C_FINAL))
+    for j in range(len(FINALES)):
+        _cab(ws, F_COL, c_fin + j, FINALES[j], PatternFill('solid', fgColor=C_FINAL))
+    # fondo de cada bloque: tono claro del color de su cabecera (los avisos se pintan antes y no se tocan)
+    fondo = {c: tono(C_CLIENTE) for c in range(1, len(FIJAS) + 1)}
+    for k in range(np_):
+        for j in range(len(BLOQUE)):
+            fondo[c_ini[k] + j] = tono(R_PROV[k % len(R_PROV)])
+    for j in range(len(FINALES)):
+        fondo[c_fin + j] = tono(C_FINAL, 0.92)
     _cab(ws, F_COL, c_nivel1, 'Capítulo nivel 1', R_CAB)
     _cab(ws, F_COL, c_capfila, 'Capítulo (fila)', R_CAB)
     ws.row_dimensions[F_COL].height = 30
@@ -255,6 +272,8 @@ def escribir(res, ruta):
             ws.cell(r, c_fin + 5).alignment = ENVOLVER
             for cidx in range(1, c_fin + len(FINALES)):
                 cel = ws.cell(r, cidx)
+                if cel.fill is None or cel.fill.fill_type is None:
+                    cel.fill = fondo[cidx]             # solo si no lleva ya un color de aviso
                 cel.border = BORDE
                 if cel.font != F_ALERTA:
                     cel.font = F_NORMAL
