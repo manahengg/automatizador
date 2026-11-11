@@ -279,6 +279,15 @@ def main():
     comprobar(isinstance(d2.get('revisar'), list), 'lista de partidas a revisar (%d)' % len(d2['revisar']))
     wb = openpyxl.load_workbook(io.BytesIO(pedir(O2 + '/excel')))
     comprobar('Análisis por partida' in wb.sheetnames, 'hoja "Análisis por partida" en el Excel')
+    # 13) fase 5: ¿está aprendiendo?
+    mt = pedir('/api/metricas')
+    po = {x['obra']: x for x in mt['obras']}
+    comprobar('Prueba' in po and po['Prueba']['corregidos'] >= 2 and po['Prueba']['horas_pedido'] is not None,
+              'métricas de la obra: %d propuestos, %d corregidos, %s sin corregir, %s h hasta el pedido'
+              % (po['Prueba']['propuestos'], po['Prueba']['corregidos'], po['Prueba']['sin_corregir'],
+                 po['Prueba']['horas_pedido']))
+    comprobar(po.get('Otra_obra', {}).get('aprendidos', 0) >= 1 and mt['global']['aprendidos'] >= 1,
+              'lo aprendido aplicado se cuenta (%d en total)' % mt['global']['aprendidos'])
     ea = pedir('/api/aprendizaje')
     comprobar(ea['muestras'] > 0 and ea['decisiones'] > 0,
               'modelo de confianza: %d decisiones, %d muestras (%d aciertos / %d errores), entrenado: %s %s'

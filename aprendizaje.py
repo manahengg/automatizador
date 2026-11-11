@@ -75,7 +75,9 @@ def cargar(bbdd):
             except ValueError:
                 continue
             pos = r['accion'] in ('casar', 'aceptar', 'pedido')
-            dec.append({'uid': r['uid'], 'accion': r['accion'], 'positiva': pos, 'obra': r['obra'],
+            from .emparejar import _numeros_modelo
+            dec.append({'nums': _numeros_modelo((r['mat_texto'] or '') + ' ' + ((d.get('material') or {}).get('texto') or '')),
+                        'uid': r['uid'], 'accion': r['accion'], 'positiva': pos, 'obra': r['obra'],
                         'proveedor': r['proveedor'], 'usuario': r['usuario'], 'cuando': r['cuando'],
                         'mat': _texto_mat(d), 'mat_codigo': r['mat_codigo'], 'mat_resumen': r['mat_texto'],
                         'lin': (d.get('linea') or {}).get('desc') or '', 'lin_ref': (d.get('linea') or {}).get('ref')})
@@ -142,6 +144,8 @@ def preparar_memoria(materiales, lineas, proveedor):
     if not okm.any():
         return None
     cols = np.where(okm.any(0))[0]       # solo decisiones con alguna partida parecida en esta obra
+    from .emparejar import _numeros_modelo
+    nums = [_numeros_modelo((m.partida.resumen or '') + ' ' + (m.descripcion or '')) for m in materiales]
     mejor = {}
     for d in cols:
         filas_l = np.where(Sl[:, d] >= UMBRAL_LIN)[0]
@@ -151,6 +155,9 @@ def preparar_memoria(materiales, lineas, proveedor):
         info = dec[d]
         for a in filas_l:
             for b in filas_m:
+                # mismo texto casi, pero otro MODELO (KOMBIC 70 / KOMBIC 100, 1500 / 2000 lm): no es lo mismo
+                if info['nums'] and nums[b] and info['nums'] != nums[b]:
+                    continue
                 ev = min(float(Sm[b, d]), float(Sl[a, d]))
                 k = (lineas[a].i, materiales[b].id)
                 signo = 1 if info['positiva'] else -1

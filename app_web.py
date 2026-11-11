@@ -220,6 +220,14 @@ def _aprendido():
     VERSION['conocimiento'] += 1
 
 
+def _origen_oferta(pv, a):
+    """'auto' | 'aprendido' | 'manual' de lo que la app tenía puesto en esa línea antes de la corrección."""
+    if a is None:
+        return None
+    o = pv['ofertas'].get(a.material_id)
+    return o.origen if o is not None and o.principal is a.linea else a.origen
+
+
 def _decision_fijar(o, r, pv, l, mat):
     """Casar (mat) o descasar (mat None) a mano la línea l: se registra con lo que la app había propuesto."""
     mats = {m.id: m for m in r.materiales}
@@ -229,11 +237,13 @@ def _decision_fijar(o, r, pv, l, mat):
         cands = sorted(((x, sc) for x in pv['lineas'] for sc, mid in (pv['puntos'].get(x.i) or []) if mid == mat.id),
                        key=lambda t: -t[1])
         sc = next((s for x, s in cands if x.uid == l.uid), None)
-        D.registrar(db(), 'casar', o.nombre, pv['nombre'],
-                    [D.item(mat, l, cands, antes, sc, muestras=D.muestras(r, pv, l, mat))])
+        it = D.item(mat, l, cands, antes, sc, muestras=D.muestras(r, pv, l, mat))
+        it['origen_antes'] = _origen_oferta(pv, a_antes)
+        D.registrar(db(), 'casar', o.nombre, pv['nombre'], [it])
     elif antes is not None:
-        D.registrar(db(), 'descasar', o.nombre, pv['nombre'],
-                    [D.item(antes, l, puntuacion=a_antes.puntuacion, muestras=D.muestras(r, pv, l, antes, False))])
+        it = D.item(antes, l, puntuacion=a_antes.puntuacion, muestras=D.muestras(r, pv, l, antes, False))
+        it['origen_antes'] = _origen_oferta(pv, a_antes)
+        D.registrar(db(), 'descasar', o.nombre, pv['nombre'], [it])
     _aprendido()
 
 
@@ -513,6 +523,19 @@ def servir(puerto=8765, abrir=True):
             m = re.fullmatch(r'/api/base/([0-9a-f]{20})/desglose', ruta)
             if m:
                 return self._proteger(lambda: self._desglose_global(m.group(1)))
+            if ruta == '/api/metricas':
+                def met():
+                    from . import metricas
+                    pares = []
+                    for ob in Obra.listar():
+                        if ob.estado.get('cliente') and not ob.pendiente_capitulos:
+                            try:
+                                pares.append((ob, analisis(ob)))
+                            except Exception:
+                                traceback.print_exc()
+                    with BLOQUEO:
+                        self._json(metricas.calcular(pares, db()))
+                return self._proteger(met)
             if ruta == '/api/aprendizaje':
                 def est():
                     from . import aprendizaje as A
