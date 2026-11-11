@@ -52,10 +52,18 @@ function cargando(on,t){$('#cargando').style.display=on?'flex':'none';$('#cargan
 async function api(url,opt){const r=await fetch(url,opt);const j=await r.json().catch(()=>({error:'Respuesta no válida'}));if(!r.ok||j.error)throw new Error(j.error||r.status);return j}
 async function irInicio(){OBRA=null;$('#titulo').textContent='Comparador de ofertas de material eléctrico';
  const obras=await api('/api/obras');
- $('#app').innerHTML=`<div class="caja fila"><b>Nueva obra:</b><input type="text" id="nuevaObra" placeholder="Nombre de la obra" size="40"><button class="prim" onclick="crearObra()">Crear</button></div>
+ $('#app').innerHTML=`<div class="caja fila"><b>Nueva obra:</b><input type="text" id="nuevaObra" placeholder="Nombre / descripción breve (p. ej. Museo Romano Mérida)" size="40"><input type="text" id="nuevaCod" placeholder="Cód. obra (p. ej. E0123)" size="14"><input type="text" id="nuevaCli" placeholder="Cliente (p. ej. CONSTRUCTORA)" size="20"><button class="prim" onclick="crearObra()">Crear</button></div>
  <div class="tarjetas">${obras.map(o=>`<div class="tarjeta" onclick="abrirObra('${esc(o.id)}')"><h3>${esc(o.nombre)}</h3>
  <div>${o.cliente?'✔ Presupuesto del cliente':'✖ Falta el presupuesto del cliente'}</div><div class="peq">Proveedores: ${o.proveedores.map(esc).join(', ')||'ninguno'}</div></div>`).join('')||'<p>No hay obras todavía.</p>'}</div>`}
-async function crearObra(){const n=$('#nuevaObra').value.trim();if(!n)return aviso('Escribe un nombre',1);try{const j=await api('/api/obras',{method:'POST',body:JSON.stringify({nombre:n})});abrirObra(j.id)}catch(e){aviso(e.message,1)}}
+async function crearObra(){const n=$('#nuevaObra').value.trim();if(!n)return aviso('Escribe un nombre',1);const cod=$('#nuevaCod').value.trim();if(!cod&&!confirm('Sin código de obra: los Excel saldrán como "SIN.…". ¿Crear igualmente? (se puede poner luego en "Datos de la obra")'))return;
+ try{const j=await api('/api/obras',{method:'POST',body:JSON.stringify({nombre:n,cod:cod,cliente:$('#nuevaCli').value.trim()})});abrirObra(j.id)}catch(e){aviso(e.message,1)}}
+async function datosObra(){const d=(DATOS&&DATOS.datos)||{};OCUPADO=true;
+ const cod=prompt('Código de la obra (p. ej. E0123). Se usa en el nombre de los Excel: Cod_Obra.Cliente.descripcion.tipo.fecha',d.cod||'');if(cod===null){OCUPADO=false;return false}
+ const cli=prompt('Cliente (p. ej. CONSTRUCTORA):',d.cliente||'');if(cli===null){OCUPADO=false;return false}
+ const des=prompt('Descripción breve de la obra (p. ej. Museo Romano Mérida):',d.descripcion||(DATOS?DATOS.nombre:''));OCUPADO=false;if(des===null)return false;
+ try{await api(`/api/obra/${encodeURIComponent(OBRA)}/datos`,{method:'POST',body:JSON.stringify({cod:cod,cliente:cli,descripcion:des})});DATOS.datos={cod:cod.trim(),cliente:cli.trim(),descripcion:des.trim()};pintarObra();return true}catch(e){aviso(e.message,1);return false}}
+async function descargar(tipo,extra){if(!(DATOS.datos||{}).cod){aviso('Falta el código de la obra para nombrar el Excel');if(!await datosObra())return}
+ location.href=`/api/obra/${encodeURIComponent(OBRA)}/${tipo}`+(extra||'')}
 async function abrirObra(id){OBRA=id;cargando(true,'Analizando la obra (la primera vez puede tardar si hay PDFs escaneados)…');
  try{DATOS=await api('/api/obra/'+encodeURIComponent(id))}catch(e){cargando(false);return aviso(e.message,1)}cargando(false);pintarObra()}
 function pintarObra(){const d=DATOS;$('#titulo').textContent='Obra: '+d.nombre;
@@ -63,25 +71,29 @@ function pintarObra(){const d=DATOS;$('#titulo').textContent='Obra: '+d.nombre;
  const pest=[['comp','Comparativa'],['alert','Alertas'],['lineas','Líneas de proveedores'],['docs','Documentos']];
  let h=`<div class="fila"><div class="caja" style="flex:1">${docsCabecera(d)}</div></div>
  <div class="pestanas">${pest.map(([k,t])=>`<button class="${PEST==k?'act':''}" onclick="PEST='${k}';pintarObra()">${t}</button>`).join('')}
- <span style="flex:1"></span>${d.materiales?`<button class="prim" onclick="location.href='/api/obra/${encodeURIComponent(d.id)}/excel'">⬇ Descargar Excel</button>`:''}</div><div id="cuerpo"></div>`;
+ <span style="flex:1"></span>${d.cliente?`<button onclick="elegirCapitulos(false,'peticion')" title="Excel con las partidas del cliente SIN precios para pedir presupuesto a los proveedores. Cuando lo devuelvan relleno, súbelo como oferta: se casa solo por el código.">📤 Petición de oferta</button>`:''}${d.materiales?`<button class="prim" onclick="descargar('excel')">⬇ Descargar comparativa</button>`:''}</div><div id="cuerpo"></div>`;
  $('#app').innerHTML=h;if(!d.materiales&&PEST!='docs'){PEST='docs'}
  ({comp:pintarComp,alert:pintarAlertas,lineas:pintarLineas,docs:pintarDocs})[PEST]()}
-function docsCabecera(d){const nf=(d.cliente_archivos||[]).length;let t=`<b>Cliente:</b> ${d.cliente?(nf>1?nf+' ficheros':esc(d.cliente.archivo.split('/').pop())):'<span class="alerta">falta</span>'}`;
+function docsCabecera(d){const nf=(d.cliente_archivos||[]).length;const dt=d.datos||{};
+ let t=`<b>Obra:</b> ${dt.cod?esc(dt.cod):'<span class="alerta">sin código</span>'}${dt.cliente?' · '+esc(dt.cliente):''} <button onclick="datosObra()" title="Código de obra, cliente y descripción breve (para el nombre de los Excel)">✏ Datos de la obra</button> &nbsp; <b>Presupuesto:</b> ${d.cliente?(nf>1?nf+' ficheros':esc(d.cliente.archivo.split('/').pop())):'<span class="alerta">falta</span>'}`;
  if(d.total_cliente!=null)t+=` · ${new Set(d.materiales.map(m=>m.n)).size} partidas · ${eur(d.total_cliente)}`;
- t+=' &nbsp; <b>Proveedores:</b> '+(d.proveedores.map(p=>{const x=d.totales&&d.totales[p.nombre];return `${esc(p.nombre)}${p.n_ofertas>1?' ['+p.n_ofertas+' ofertas]':''}${x?` (${x.cubiertos} materiales · ${eur(x.importe)})`:''}`}).join(' · ')||'ninguno');
+ t+=' &nbsp; <b>Proveedores:</b> '+(d.proveedores.map(p=>{const x=d.totales&&d.totales[p.nombre];return `${esc(p.nombre)}${x&&x.referencia?' <i>(referencia)</i>':''}${p.n_ofertas>1?' ['+p.n_ofertas+' ofertas]':''}${x?` (${x.cubiertos} materiales · ${eur(x.importe)})`:''}`}).join(' · ')||'ninguno');
  if(d.cliente)t+=` &nbsp; <button onclick="elegirCapitulos(false)" title="Elegir qué capítulos del presupuesto hacemos nosotros">📂 Capítulos que hacemos${d.capitulos?' ('+d.capitulos.length+')':''}</button>`;
  return t+` &nbsp; <button onclick="PEST='docs';pintarObra()">+ Añadir oferta</button>`}
 let ARBOL=null;
-async function elegirCapitulos(primeraVez){cargando(true,'Leyendo los capítulos del presupuesto…');let j;try{j=await api(`/api/obra/${encodeURIComponent(OBRA)}/capitulos`)}catch(e){cargando(false);return aviso(e.message,1)}cargando(false);
+async function elegirCapitulos(primeraVez,modo){const pet=modo=='peticion';cargando(true,'Leyendo los capítulos del presupuesto…');let j;try{j=await api(`/api/obra/${encodeURIComponent(OBRA)}/capitulos`)}catch(e){cargando(false);return aviso(e.message,1)}cargando(false);
  ARBOL=j;OCUPADO=true;const sel=new Set(j.incluidos||[]);const todos=j.incluidos===null;
  const fila=n=>`<div class="capfila" data-nivel="${n.nivel}" style="padding-left:${n.nivel*22}px"><label><input type="checkbox" class="capchk" data-clave="${esc(n.clave)}" ${todos||sel.has(n.clave)?'checked':''} onchange="marcarCap(this)">
   <b>${esc(n.codigo)}</b> ${esc(n.titulo)}</label> <span class="peq">${n.partidas} partidas${j.total?' · '+eur(n.importe):''}</span></div>${n.hijos.map(fila).join('')}`;
  $('#titulo').textContent='Obra: '+(DATOS?DATOS.nombre:OBRA);
- $('#app').innerHTML=`<div class="caja"><h3 style="margin-top:0">${primeraVez?'Antes de procesar: ':''}¿Qué capítulos del presupuesto hacemos nosotros?</h3>
- <p class="peq">Solo se compararán con las ofertas, se casarán y saldrán en el Excel las partidas de los capítulos marcados. Puedes cambiarlo cuando quieras con el botón "📂 Capítulos que hacemos" (añadir o quitar capítulos rehace la comparativa). Al marcar o desmarcar un capítulo se marcan o desmarcan sus subcapítulos.</p>
+ $('#app').innerHTML=`<div class="caja"><h3 style="margin-top:0">${pet?'📤 Petición de oferta: ¿qué capítulos se piden a este proveedor?':(primeraVez?'Antes de procesar: ':'')+'¿Qué capítulos del presupuesto hacemos nosotros?'}</h3>
+ ${pet?`<p class="peq">Se genera un Excel con las partidas de los capítulos marcados <b>sin precios</b> (cantidad real de material a comprar, descripción completa y celdas amarillas para que el proveedor ponga marca, referencia, precio y descuento). No lleva el nombre del cliente. Cuando el proveedor lo devuelva relleno, súbelo en Documentos como oferta: se casa automáticamente por el código de cada fila. Por defecto están marcados los capítulos que hacemos.</p>`:''}
+ <p class="peq" style="${pet?'display:none':''}">Solo se compararán con las ofertas, se casarán y saldrán en el Excel las partidas de los capítulos marcados. Puedes cambiarlo cuando quieras con el botón "📂 Capítulos que hacemos" (añadir o quitar capítulos rehace la comparativa). Al marcar o desmarcar un capítulo se marcan o desmarcan sus subcapítulos.</p>
  <div class="fila"><button onclick="todosCap(true)">Marcar todos</button><button onclick="todosCap(false)">Desmarcar todos</button><span id="capResumen" style="font-weight:bold"></span></div>
  <div style="margin:10px 0;max-height:calc(100vh - 330px);overflow:auto;border:1px solid var(--borde);border-radius:6px;padding:8px">${j.arbol.map(fila).join('')}</div>
- <div class="fila"><button class="prim" onclick="guardarCap()">✔ Guardar y procesar</button>${primeraVez?'':'<button onclick="OCUPADO=false;abrirObra(OBRA)">Cancelar</button>'}</div></div>`;resumenCap()}
+ <div class="fila">${pet?'<button class="prim" onclick="descargarPeticion()">⬇ Descargar petición de oferta</button><button onclick="OCUPADO=false;abrirObra(OBRA)">Volver</button>':`<button class="prim" onclick="guardarCap()">✔ Guardar y procesar</button>${primeraVez?'':'<button onclick="OCUPADO=false;abrirObra(OBRA)">Cancelar</button>'}`}</div></div>`;resumenCap()}
+async function descargarPeticion(){const inc=[...document.querySelectorAll('.capchk')].filter(c=>c.checked).map(c=>c.dataset.clave);if(!inc.length)return aviso('Marca al menos un capítulo',1);
+ await descargar('peticion','?caps='+encodeURIComponent(inc.join('|')))}
 function marcarCap(chk){const f=chk.closest('.capfila');const nivel=+f.dataset.nivel;let el=f.nextElementSibling;
  while(el&&+el.dataset.nivel>nivel){el.querySelector('.capchk').checked=chk.checked;el=el.nextElementSibling}resumenCap()}
 function todosCap(v){document.querySelectorAll('.capchk').forEach(c=>c.checked=v);resumenCap()}
@@ -101,9 +113,9 @@ function pintarDocs(){const d=DATOS;const L=d.lineas||{};
  <div class="caja"><h3 style="margin-top:0">2. Ofertas de proveedores (se pueden añadir en cualquier momento)</h3>
  <div class="fila"><input type="file" id="fProv" multiple accept=".pdf,.xlsx,.xlsm,.bc3"><input type="text" id="nProv" placeholder="Proveedor (opcional)" list="listaProv"><datalist id="listaProv">${d.proveedores.map(p=>`<option value="${esc(p.nombre)}">`).join('')}</datalist>
  <label title="Si no se marca, la oferta se AÑADE a las que ya hay de ese proveedor (p. ej. una oferta por capítulo)"><input type="checkbox" id="sustProv"> Sustituir las ofertas anteriores de este proveedor</label><button class="prim" onclick="subir('proveedor')">Añadir</button></div>
- <div class="peq">Un proveedor puede tener <b>varias ofertas</b> (por ejemplo una por capítulo) o una sola para todo: se casan todas juntas con el presupuesto. Si escribes el nombre del proveedor se aplica a todos los ficheros seleccionados; si no, se deduce de cada documento. Los PDF escaneados se leen con OCR.</div>
+ <div class="peq">También se puede subir una <b>base de precios</b> (p. ej. la de la Junta de Extremadura en Excel): entra como precio de <b>referencia</b> (se compara, pero no cuenta para el más barato ni para el reparto) y se puede descargar su desglose. Un proveedor puede tener <b>varias ofertas</b> (por ejemplo una por capítulo) o una sola para todo: se casan todas juntas con el presupuesto. Si escribes el nombre del proveedor se aplica a todos los ficheros seleccionados; si no, se deduce de cada documento. Los PDF escaneados se leen con OCR.</div>
  <table style="margin-top:8px"><tr><th>Proveedor</th><th>Fichero</th><th>Añadida por</th><th>Fecha oferta</th><th>Validez</th><th>Líneas</th><th>Total documento</th><th>Suma leída</th><th>Avisos</th><th></th></tr>
- ${filasOf.map(([p,x])=>`<tr><td>${esc(p)}</td><td>${esc(x.archivo)}</td><td class="peq">${esc(x.usuario||'')}<br>${esc((x.anadida||'').replace('T',' ').slice(0,16))}</td><td>${esc(x.fecha)}</td><td>${esc(x.validez)}</td><td class="num">${x.lineas}</td><td class="num">${eur(x.total_doc)}</td><td class="num ${x.total_doc!=null&&Math.abs(x.total_doc-x.suma)>0.05?'revisar':''}">${eur(x.suma)}</td><td class="alerta">${(x.avisos||[]).map(esc).join('<br>')}</td><td><button onclick="quitarOferta('${x.huella}','${esc(x.archivo)}')">Quitar</button></td></tr>`).join('')}</table>
+ ${filasOf.map(([p,x])=>`<tr><td>${esc(p)}</td><td>${esc(x.archivo)}</td><td class="peq">${esc(x.usuario||'')}<br>${esc((x.anadida||'').replace('T',' ').slice(0,16))}</td><td>${esc(x.fecha)}</td><td>${esc(x.validez)}</td><td class="num">${x.lineas}</td><td class="num">${eur(x.total_doc)}</td><td class="num ${x.total_doc!=null&&Math.abs(x.total_doc-x.suma)>0.05?'revisar':''}">${eur(x.suma)}</td><td class="alerta">${(x.avisos||[]).map(esc).join('<br>')}</td><td>${(L[p]||{}).referencia?`<button onclick="descargar('desglose/${x.huella}')" title="Excel con el desglose de la base: partidas, mano de obra/materiales/maquinaria, materiales e incoherencias">⬇ Desglose</button> `:''}<button onclick="quitarOferta('${x.huella}','${esc(x.archivo)}')">Quitar</button></td></tr>`).join('')}</table>
  ${d.proveedores.length&&!filasOf.length?'<p class="peq">Las ofertas se muestran aquí después de elegir los capítulos.</p>':''}</div>
  <div class="caja"><h3 style="margin-top:0">Historial (quién ha hecho qué)</h3>${(d.historial||[]).map(h=>`<div class="peq">${esc((h.cuando||'').replace('T',' '))} · <b>${esc(h.usuario||'')}</b> ${esc(h.detalle)}</div>`).join('')}</div>`}
 async function quitarOferta(h,nom){OCUPADO=true;const ok=confirm('¿Quitar la oferta '+nom+'?');OCUPADO=false;if(!ok)return;try{await api(`/api/obra/${encodeURIComponent(OBRA)}/quitar_oferta`,{method:'POST',body:JSON.stringify({huella:h})});abrirObra(OBRA)}catch(e){aviso(e.message,1)}}
@@ -131,16 +143,22 @@ async function subir(tipo){const inp=tipo=='cliente'?$('#fCli'):$('#fProv');if(!
  catch(e){verProgreso(false);aviso(e.message,1)}finally{OCUPADO=false}}
 async function quitar(p){OCUPADO=true;const ok=confirm('¿Quitar la oferta de '+p+'?');OCUPADO=false;if(!ok)return;try{await api(`/api/obra/${encodeURIComponent(OBRA)}/quitar`,{method:'POST',body:JSON.stringify({proveedor:p})});abrirObra(OBRA)}catch(e){aviso(e.message,1)}}
 let SOLO_OF=null;
+const REF=p=>DATOS.totales&&DATOS.totales[p]&&DATOS.totales[p].referencia?' <i>(referencia)</i>':'';
+function cajaReparto(d){const r=d.reparto;if(!r||!r.filas.length||!r.total)return'';
+ return `<div class="caja" style="margin:0 0 6px;padding:8px 12px"><b>Reparto entre distribuidores</b> <span class="peq">(cada material al que tiene el unitario más bajo${Object.values(d.totales||{}).some(x=>x.referencia)?'; las bases de referencia no cuentan':''})</span>
+ <table style="width:auto;margin-top:4px"><tr><th>Distribuidor</th><th>Materiales adjudicados</th><th>Importe adjudicado</th><th>%</th><th>Materiales que oferta</th><th>Si se le compra todo lo que oferta</th></tr>
+ ${r.filas.map(x=>`<tr><td>${esc(x.proveedor)}</td><td class="num">${x.materiales}</td><td class="num"><b>${eur(x.importe)}</b></td><td class="num">${(x.pct*100).toFixed(1)} %</td><td class="num">${x.ofertados}</td><td class="num">${eur(x.total_propio)}</td></tr>`).join('')}
+ <tr><td><b>Total mejor combinación</b></td><td class="num">${r.filas.reduce((a,x)=>a+x.materiales,0)}</td><td class="num"><b>${eur(r.total)}</b></td><td></td><td colspan="2" class="peq">${r.sin} materiales sin oferta de ningún distribuidor</td></tr></table></div>`}
 function pintarComp(){const d=DATOS,P=d.proveedores.map(p=>p.nombre);
  const conOf=d.materiales.filter(m=>Object.keys(m.prov).length).length,total=d.materiales.length;
  const soloOf=SOLO_OF===null?(P.length>0&&conOf<total/2):SOLO_OF;
  const caps=[...new Set(d.materiales.filter(m=>Object.keys(m.prov).length).map(m=>m.cap))];
  const resumenOf=P.length?`<div class="caja" style="margin:0 0 6px;padding:8px 12px"><b>${conOf} de ${total}</b> materiales tienen oferta de algún proveedor${conOf<total?` (capítulos ofertados: ${caps.slice(0,8).map(esc).join(', ')}${caps.length>8?'…':''}). El resto de partidas del cliente no las ha ofertado nadie${soloOf?' y están ocultas: desmarca "solo partidas con oferta" para verlas':''}.`:'.'}</div>`:'';
- let h=`${resumenOf}<div class="fila" style="margin-bottom:6px"><input type="text" id="filtro" placeholder="Filtrar por texto, código o capítulo" size="40" oninput="filtrar()">
+ let h=`${resumenOf}${cajaReparto(d)}<div class="fila" style="margin-bottom:6px"><input type="text" id="filtro" placeholder="Filtrar por texto, código o capítulo" size="40" oninput="filtrar()">
  <label title="Oculta las partidas que ningún proveedor ha ofertado"><input type="checkbox" id="soloOf" onchange="SOLO_OF=this.checked;filtrar()" ${soloOf?'checked':''}> solo partidas con oferta</label>
  <label><input type="checkbox" id="soloAl" onchange="filtrar()"> solo con alertas</label><span class="peq">Verde = más barato · amarillo = casamiento a revisar · naranja = ofertan algo distinto. Pasa el ratón por encima para ver detalles.</span></div>
  <div class="tabla"><table id="tcomp"><thead><tr><th>Nº</th><th>Código</th><th>Partida del cliente</th><th>Material a comprar</th><th>Ud</th><th>Cant.</th><th>Precio cliente</th>
- ${P.map(p=>`<th>${esc(p)}<br>código</th><th>${esc(p)}<br>cant. ofertada</th><th>${esc(p)}<br>unitario</th><th>${esc(p)}<br>total</th>`).join('')}<th>Más bajo</th><th>P.U. más barato</th><th>× cantidad</th><th>BBDD</th><th>Alertas</th></tr></thead><tbody>`;
+ ${P.map(p=>`<th>${esc(p)}${REF(p)}<br>código</th><th>${esc(p)}<br>cant. ofertada</th><th>${esc(p)}<br>unitario</th><th>${esc(p)}<br>total</th>`).join('')}<th>Más bajo</th><th>P.U. más barato</th><th>× cantidad</th><th>BBDD</th><th>Alertas</th></tr></thead><tbody>`;
  let cap=null;for(const m of d.materiales){if(m.cap!==cap){cap=m.cap;h+=`<tr class="cap"><td colspan="${12+P.length*4}">${esc(cap)}</td></tr>`}
   const al=[...m.alertas_cli.map(a=>'CLIENTE: '+a),...(m.aprendido||[]).map(a=>'🧠 '+a)];let celdas='';
   const min=m.mejor.precio;

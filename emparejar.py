@@ -746,3 +746,105 @@ def comparacion_cantidad(cant_prov, cant_mat):
     if abs(d) <= max(0.005, cant_mat * 0.005):
         return '='
     return '%s %s (%+.0f%%)' % ('más' if d > 0 else 'menos', E._num(abs(d)), d / cant_mat * 100)
+
+
+# ------------------------------------------------------------------------------------- catálogos de precios
+UMBRAL_CATALOGO = 0.62
+
+
+def emparejar_catalogo(materiales, lineas, manuales=None, conocidas=None):
+    """Para una BASE DE PRECIOS (catálogo sin cantidades, p. ej. la de la Junta): a cada material del cliente se le da
+    el artículo más parecido del catálogo, si se parece lo bastante. Un mismo artículo puede servir a varias partidas
+    (al revés que en una oferta, donde cada línea es una cosa). Devuelve (asignaciones, sin_casar=[], puntos)."""
+    manuales = manuales or {}
+    por_id = {m.id: m for m in materiales}
+    preparar_idf(materiales)
+    asign, fijados, vetadas = [], set(), set()
+    por_i = {l.i: l for l in lineas}
+    for li, mid in manuales.items():
+        l = por_i.get(li)
+        if l is None:
+            continue
+        if mid and mid in por_id:
+            asign.append(Asignacion(mid, l, 'principal', 1.0, 'manual'))
+            fijados.add(mid)
+        else:
+            vetadas.add(li)
+    # índice de candidatos: misma familia o compatibles; sin familia, palabras raras en común
+    por_fam, por_tok = collections.defaultdict(list), collections.defaultdict(list)
+    for l in lineas:
+        if l.i in vetadas or l.partida.precio is None:
+            continue
+        por_fam[l.atributos.get('familia')].append(l)
+        for t in l.tokens:
+            if len(t) >= 4 and not t.isdigit():
+                por_tok[t].append(l)
+    puntos = {}
+    for m in materiales:
+        if m.id in fijados:
+            continue
+        fm = m.atributos.get('familia')
+        if fm:
+            cands = [l for f, ls in por_fam.items() if E.compatibles(f, fm) for l in ls]
+        else:
+            vistos = {}
+            for t in m.tokens:
+                if _IDF.get(t, 0) > 1.0:
+                    for l in por_tok.get(t, ()):
+                        vistos[l.i] = l
+            cands = list(vistos.values())
+        mejor = sorted(((puntuar(l, m, conocidas), l.i) for l in cands), reverse=True)[:12]
+        for sc, li in mejor:
+            if sc < UMBRAL_CATALOGO:
+                break
+            l = por_i[li]
+            if _choca_catalogo(m, l) or any(g == 'alta' for g, t in E.comparar(m.atributos, l.atributos)):
+                continue
+            asign.append(Asignacion(m.id, l, 'principal', sc))
+            puntos.setdefault(li, []).append((sc, m.id))
+            break
+    return asign, [], puntos
+
+
+MATERIALES_CANAL = [('acero', r'acero|galvaniz|metalic|inox'), ('pvc', r'\bpvc\b'), ('policarbonato', r'policarbonato'),
+                    ('polietileno', r'polietileno|\bpe\b'), ('poliamida', r'poliamida'), ('aluminio', r'alumin')]
+TIPOS_BANDEJA = [('rejilla', r'rejilla|varilla'), ('ciega', r'ciega'), ('perforada', r'perforad'), ('escalera', r'escalera')]
+
+
+def _choca_catalogo(m, l):
+    """En un catálogo hay de todo: se descartan parecidos que son otra cosa (tubo de acero frente a policarbonato,
+    bandeja de rejilla frente a ciega, 1x150 frente a 3x150, cable desnudo frente a aislado, la tapa de la bandeja...)."""
+    if l.es_accesorio and not es_accesorio_texto(m.descripcion + ' ' + (m.partida.resumen or '')):
+        return True
+    tm = E.norm(m.descripcion + ' ' + (m.partida.resumen or '') + ' ' + m.partida.descripcion[:200])
+    tl = E.norm(l.partida.descripcion)
+    fam = m.atributos.get('familia')
+    if re.match(r'(prueba|ensayo|legaliz|certific|document|tramit|honorario|gestion|desmontaje|retirada|ayuda)',
+                E.norm(m.descripcion)):
+        return True                     # servicios: un catálogo de materiales no tiene su precio
+    if re.match(r'tapa\b', tl) and not re.match(r'tapa\b', E.norm(m.descripcion)):
+        return True
+    if fam in ('canal', 'bandeja'):
+        dm = set(re.findall(r'(\d{2,3})\s*x\s*(\d{2,3})', tm)[:1])
+        dl = set(re.findall(r'(\d{2,3})\s*x\s*(\d{2,3})', tl)[:1])
+        if dm and dl and {tuple(sorted(x)) for x in dm} != {tuple(sorted(x)) for x in dl}:
+            return True
+    if fam in ('tubo', 'canal', 'bandeja'):
+        for grupo in (MATERIALES_CANAL, TIPOS_BANDEJA if fam == 'bandeja' else []):
+            a = {n for n, pat in grupo if re.search(pat, tm)}
+            b = {n for n, pat in grupo if re.search(pat, tl)}
+            if a and b and not a & b:
+                return True
+    if fam == 'cable':
+        if ('desnudo' in tl) != ('desnudo' in tm):
+            return True
+        kv = lambda t: '1kv' if re.search(r'0[.,]6\s*/\s*1\s*kv|0[.,]6-1\s*kv|rz1|xz1|rv-?k', t) else (
+            '750v' if re.search(r'750\s*v|450\s*/\s*750|h07', t) else None)
+        if kv(tm) and kv(tl) and kv(tm) != kv(tl):
+            return True
+        fm, fl = m.atributos.get('formacion') or [], l.atributos.get('formacion') or []
+        if fm and fl and fm[0][0] != fl[0][0] and not re.search(r'\(\s*1\s*x', tl):
+            return True
+        if m.atributos.get('material') and l.atributos.get('material') and m.atributos['material'] != l.atributos['material']:
+            return True
+    return False

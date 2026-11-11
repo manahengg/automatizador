@@ -31,7 +31,7 @@ from . import emparejar as M
 from .app_html import PAGINA
 from .bbdd import BBDD
 from .obra import Obra, clave_mat, leer_cliente, ruta_bbdd
-from .exportadores import excel_comparativa
+from .exportadores import excel_comparativa, excel_peticion
 
 MAX_SUBIDA = 300 * 1024 * 1024
 BLOQUEO = threading.RLock()        # una operación pesada cada vez (OCR, análisis, escritura)
@@ -126,7 +126,7 @@ def datos_obra(o):
                              'usuario': p.get('usuario'), 'n_ofertas': len(p['ofertas'])} for p in e['proveedores']],
             'cliente_archivos': [{'archivo': os.path.basename(a['archivo']), 'huella': a['huella']}
                                  for a in (e.get('cliente') or {}).get('archivos', [])],
-            'historial': e['historial'][-40:][::-1], 'capitulos': e.get('capitulos')}
+            'historial': e['historial'][-40:][::-1], 'capitulos': e.get('capitulos'), 'datos': e.get('datos') or {}}
     if o.pendiente_capitulos:
         base['pendiente_capitulos'] = True          # primero hay que elegir qué capítulos hacemos
         return base
@@ -164,6 +164,8 @@ def datos_obra(o):
         out = []
         for l in pv['lineas']:
             a = por.get(l.i)
+            if pv.get('catalogo') and not a:
+                continue                   # base de precios: solo los artículos usados (son miles)
             cands = [{'id': mid, 'p': _n(sc)} for sc, mid in (pv['puntos'].get(l.i) or [])[:5]]
             out.append({'i': l.i, 'uid': l.uid, 'seccion': l.seccion, 'codigo': l.referencia, 'desc': l.partida.descripcion[:200],
                         'cant': l.partida.cantidad, 'precio': _n(l.partida.precio, 4), 'dto': l.partida.dto_pct,
@@ -178,10 +180,15 @@ def datos_obra(o):
                          'anadida': x.get('anadida'), 'lineas': sum(1 for _ in d.partidas()),
                          'suma': round(sum(p.importe_exacto for p in d.partidas() if p.precio is not None), 2),
                          'avisos': [a.texto for a in d.avisos if a.nivel != 'info'][:12]})
-        lineas[pv['nombre']] = {'lineas': out, 'docs': docs}
+        lineas[pv['nombre']] = {'lineas': out, 'docs': docs, 'referencia': bool(pv.get('referencia')),
+                                'catalogo': bool(pv.get('catalogo'))}
     total_cli = round(sum(m.partida.importe for m in r.materiales if m.primero), 2)
     totales = {pv['nombre']: {'importe': round(sum(o.importe or 0 for o in pv['ofertas'].values()), 2),
                               'cubiertos': len(pv['ofertas']), 'sin': len(pv['sin'])} for pv in provs}
+    filas_rep, total_rep, sin_rep = r.reparto()
+    for pv in provs:
+        totales[pv['nombre']]['referencia'] = bool(pv.get('referencia'))
+    base.update(reparto={'filas': filas_rep, 'total': total_rep, 'sin': sin_rep})
     base.update(materiales=mats, lineas=lineas, total_cliente=total_cli, totales=totales,
                 cliente_nombre=r.cliente.nombre, avisos_cliente=[a.texto for a in r.cliente.avisos if a.nivel != 'info'])
     return base
@@ -402,6 +409,13 @@ def servir(puerto=8765, abrir=True):
             m = re.fullmatch(r'/api/obra/([^/]+)/excel', ruta)
             if m:
                 return self._proteger(lambda: self._excel(Obra.abrir(m.group(1))))
+            m = re.fullmatch(r'/api/obra/([^/]+)/peticion', ruta)
+            if m:
+                caps = [c for c in (q.get('caps') or [''])[0].split('|') if c] or None
+                return self._proteger(lambda: self._peticion(Obra.abrir(m.group(1)), caps))
+            m = re.fullmatch(r'/api/obra/([^/]+)/desglose/([0-9a-f]{6,64})', ruta)
+            if m:
+                return self._proteger(lambda: self._desglose(Obra.abrir(m.group(1)), m.group(2)))
             m = re.fullmatch(r'/api/trabajo/([0-9a-f]{32})', ruta)
             if m:
                 t = TRABAJOS.get(m.group(1))
@@ -440,9 +454,60 @@ def servir(puerto=8765, abrir=True):
                         datos = f.read()
                 finally:
                     os.remove(tmp)
-            nombre = 'comparativa_%s.xlsx' % re.sub(r'[^\w.-]+', '_', o.ident)
+            self._descargar(datos, o.nombre_excel('Comparativa'))
+
+        def _descargar(self, datos, nombre):
+            from urllib.parse import quote
+            ascii_ = re.sub(r'[^\w.-]+', '_', nombre.encode('ascii', 'ignore').decode()) or 'fichero.xlsx'
             self._enviar(200, datos, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                         {'Content-Disposition': 'attachment; filename="%s"' % nombre})
+                         {'Content-Disposition': 'attachment; filename="%s"; filename*=UTF-8\'\'%s'
+                                                 % (ascii_, quote(nombre))})
+
+        def _generar(self, escribir):
+            fd, tmp = tempfile.mkstemp(suffix='.xlsx')
+            os.close(fd)
+            try:
+                escribir(tmp)
+                with open(tmp, 'rb') as f:
+                    return f.read()
+            finally:
+                os.remove(tmp)
+
+        def _peticion(self, o, caps=None):
+            """Petición de oferta sin precios de los capítulos elegidos (por defecto, los que hacemos)."""
+            if not o.estado.get('cliente'):
+                raise ValueError('Primero sube el presupuesto del cliente.')
+            with BLOQUEO:
+                doc = o.documento_cliente()
+            mats = M.materiales_cliente(doc)
+            incl = set(caps) if caps else (set(o.estado['capitulos']) if o.estado.get('capitulos') is not None else None)
+            if incl is not None:
+                mats = [x for x in mats if M.clave_material_cap(x) in incl]
+            if not mats:
+                raise ValueError('No hay partidas en los capítulos elegidos.')
+            titulos = []
+            for x in mats:
+                t = ' '.join(y for y in [(x.ruta_codigos[-1] if x.ruta_codigos else '') or '', x.ruta[-1] if x.ruta else '']
+                             if y).strip()
+                if t and t not in titulos:
+                    titulos.append(t)
+            d = o.estado.get('datos') or {}
+            datos = self._generar(lambda ruta: excel_peticion.escribir(
+                mats, ruta, obra=d.get('descripcion') or o.nombre, cod_obra=d.get('cod') or '',
+                capitulos_txt='; '.join(titulos)[:400]))
+            self._descargar(datos, o.nombre_excel('Peticion_oferta'))
+
+        def _desglose(self, o, huella_doc):
+            of = next((x for x in o.estado['ofertas'] if x['huella'].startswith(huella_doc)), None)
+            if not of:
+                raise ValueError('No encuentro ese documento en la obra.')
+            ruta = os.path.join(o.carpeta, of['archivo'])
+            from .lectores import base_precios
+            if not base_precios.reconoce(ruta):
+                raise ValueError('Ese documento no es una base de precios.')
+            from .exportadores import excel_base_precios
+            datos = self._generar(lambda tmp: excel_base_precios.escribir(ruta, tmp))
+            self._descargar(datos, o.nombre_excel('Desglose_' + of['proveedor']))
 
         # ------------------------------------------------------------------------------ POST
         def _cuerpo(self):
@@ -482,10 +547,11 @@ def servir(puerto=8765, abrir=True):
                 return self._proteger(borrar)
             if ruta == '/api/obras':
                 def crear():
-                    o = Obra.crear(self._json_cuerpo().get('nombre', ''))
+                    d = self._json_cuerpo()
+                    o = Obra.crear(d.get('nombre', ''), (d.get('cod') or '').strip(), (d.get('cliente') or '').strip())
                     self._json({'id': o.ident})
                 return self._proteger(crear)
-            m = re.fullmatch(r'/api/obra/([^/]+)/(cliente|proveedor|quitar|quitar_oferta|quitar_cliente|fijar|deshacer|reanalizar|caso|capitulos)', ruta)
+            m = re.fullmatch(r'/api/obra/([^/]+)/(cliente|proveedor|quitar|quitar_oferta|quitar_cliente|fijar|deshacer|reanalizar|caso|capitulos|datos)', ruta)
             if not m:
                 return self._error(404, 'No encontrado.')
             accion = m.group(2)
@@ -552,6 +618,9 @@ def servir(puerto=8765, abrir=True):
                         db().anotar_caso(o.nombre, mat, datos['observacion'], prov, oferta,
                                          float(str(cant).replace(',', '.')) if cant not in (None, '') else None)
                         _CACHE.clear()
+                    elif accion == 'datos':
+                        o.poner_datos((datos.get('cod') or '').strip(), (datos.get('cliente') or '').strip(),
+                                      (datos.get('descripcion') or '').strip())
                     elif accion == 'reanalizar':
                         analisis(o, forzar=True)
                 self._json({'ok': True})

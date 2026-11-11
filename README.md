@@ -25,6 +25,20 @@ PDF escaneado o Excel) —al principio o en cualquier momento— y la app:
 - **Varias ofertas por proveedor**: p. ej. una por capítulo, o una sola para todo; se casan todas juntas. Al subir se
   elige si se añade o si sustituye a las anteriores de ese proveedor.
 - Columnas del proveedor: **unitario** y **total**.
+- **Datos de la obra y nombre de los Excel**: al crear la obra se piden el **código de obra** y el **cliente** (se
+  cambian con "✏ Datos de la obra"). Todo Excel que genera la app se llama
+  `Cod_Obra.Cliente.descripcion_breve.tipo_documento.DD-MM-YYYY.xlsx`, p. ej.
+  `E0123.CONSTRUCTORA.MUSEO_ROMANO_MERIDA.Comparativa.11-11-2026.xlsx`. Los Excel ya no llevan el logo.
+- **Petición de oferta** ("📤 Petición de oferta"): Excel con las partidas de los capítulos elegidos **sin precios**
+  para mandarlo a los proveedores (cantidad real de material, descripción completa, celdas amarillas para marca,
+  referencia, precio y descuento; sin el nombre del cliente). Cuando el proveedor lo devuelve relleno se sube como
+  oferta y **se casa solo por el código** de cada fila.
+- **Bases de precios** (p. ej. la de la Junta de Extremadura en Excel): se suben como un proveedor más y entran como
+  **referencia**: se comparan sus precios de material, pero no cuentan para el "más barato" ni para el reparto, y avisan
+  si los distribuidores están por encima. En Documentos, "⬇ Desglose" saca un Excel con cada partida separada en mano
+  de obra / materiales / maquinaria / %, los materiales con su precio y las incoherencias de la propia base.
+- **Reparto entre distribuidores**: comprando cada material al más barato, cuánto se le adjudica a cada distribuidor
+  (en la pantalla y en la hoja Resumen del Excel).
 - **Halógenos**: antes de avisar se deduce si lo ofertado lleva halógenos (designación Z1 = libre, V = PVC; AS/LSZH/LH;
   CPR a1; marcas; PVC en tubos). Solo hay alerta grave si se confirma que los lleva.
 
@@ -94,6 +108,8 @@ python -m automatizador bbdd "1x35 rz1-k"
 |---|---|---|
 | Leer PDF | `pdfpalabras.py` | Palabras con su posición. Si la página es un escaneo, **OCR con RapidOCR** (incluido, sin programas externos). Une números que el PDF dibuja partidos ("7" + "70,80" → 770,80). |
 | Oferta de proveedor | `lectores/pdf_oferta.py` | **Lector genérico por columnas** (no hay plantillas por proveedor): localiza la cabecera CÓDIGO/DESCRIPCIÓN/CANTIDAD/PRECIO/DTO/IMPORTE, asigna cada número a su columna y comprueba cantidad × precio × (1−dto) = importe. Detecta secciones (plantas), cánones RAEE, líneas OPCIONALES y el total del documento para verificar que cuadra. |
+| Base de precios | `lectores/base_precios.py`, `exportadores/excel_base_precios.py` | Base oficial en Excel FIEBDC aplanado (padre · tipo · código · precio · descomposición): capítulos, partidas con su descomposición, materiales; incoherencias (título frente a descomposición, sumas que no cuadran). Se casa en "modo catálogo" (`emparejar_catalogo`: un artículo puede servir a varias partidas, filtros estrictos de material/tipo/tensión/medidas). |
+| Petición de oferta | `exportadores/excel_peticion.py`, `lectores/excel_peticion.py` | Excel sin precios para proveedores y lectura del mismo devuelto relleno (casado por código). |
 | Presupuesto del cliente | `lectores/pdf_presupuesto.py`, `lectores/bc3.py` | Capítulos, subcapítulos, partidas, descripción larga, cantidad, precio e importe (formato Presto/Arquímedes/m4PRO o BC3). |
 | Conocimiento eléctrico | `electrico.py` | Familia del producto y características (sección, tipo de cable RZ1-K/H07Z1-K/RV-K/XZ1, Cu/Al, Ø, W, lm, K, IP, polos, A, mA, fases, kWp, óptica, longitud…). **Convierte la partida en materiales con cantidad real**: 4x35+1x16 unipolar × 27,5 m → 110 m de 1x35 + 27,5 m de 1x16; 3(1x150)+1x95 → 3×Q + Q; "2 TUBOS" → 2×Q; puesto de trabajo con 3 RJ45 → 3×Q conectores; sistema FV de 21 paneles → módulos + inversor. Revisa incoherencias (IP547 no existe, título y descripción con potencias distintas, "conexión a red" frente a "sin conexión a red", secciones no normalizadas, H07Z1-K a 0,6/1 kV…) y compara pedido/ofertado. |
 | Emparejar | `emparejar.py` | Puntúa cada pareja línea↔material por código, familia, características, texto, cantidad y planta; asignación global + mejora local por bloques; los accesorios (tapas, placas, bases, protecciones…) se suman a su partida como complementos. Potencia FV: calcula cuántos módulos **del proveedor** hacen falta para los kWp pedidos y avisa si la oferta se queda corta o se pasa. |
@@ -115,5 +131,6 @@ python -m automatizador bbdd "1x35 rz1-k"
 
 ## Ejemplos
 
-`obras/` contiene dos casos reales usados para probar: Alburquerque (cliente en PDF; Electrofil en PDF y Sonepar
-escaneado) y Museo de Mérida (cliente en BC3; Electromercantil y Electrofil).
+`obras/` contiene casos reales usados para probar: Alburquerque (cliente en PDF; Electrofil en PDF y Sonepar
+escaneado), Museo de Mérida (cliente en BC3; Electromercantil y Electrofil), Mormones (cliente en varios Excel; Sonepar
+escaneado) y `bases_precios/` (base de precios de la Junta de Extremadura 2026).

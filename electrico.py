@@ -135,7 +135,17 @@ def formacion_cable(n):
     if m and not re.search(r'\d\s*[xg]\s*\d', n.split('unipolar')[1][:20]):
         return [(1, _f(m.group(1)))]
     n = n.replace(' x ', 'x').replace('mm2', '').replace('mm', '')
+    n = re.sub(r'(\d)\s*x\s*\(', r'\1(', n)          # '3x(1x150)' = '3(1x150)'
     out = []
+    # anidado: '4(4(1x240))' = 4 ternas/grupos de 4 conductores de 240 -> 16 x 240;  '2(3(1x240)+1x150)' -> 6x240 + 2x150
+    m = re.search(r'(\d+)\s*\(\s*(\d+)\s*\(\s*1\s*x\s*(\d+(?:[.,]\d+)?)\s*\)'
+                  r'(?:\s*\+\s*(\d+)\s*x\s*(\d+(?:[.,]\d+)?))?(?:\s*\))?', n)     # (tolera el ')' final olvidado)
+    if m:
+        a = int(m.group(1))
+        out.append((a * int(m.group(2)), _f(m.group(3))))
+        if m.group(4):
+            out.append((a * int(m.group(4)), _f(m.group(5))))
+        return out
     m = re.search(r'(\d+)\s*\(\s*1\s*x\s*(\d+(?:[.,]\d+)?)\s*\)(?:\s*\+\s*(\d+)\s*x\s*(\d+(?:[.,]\d+)?))?', n)
     if m:
         out.append((int(m.group(1)), _f(m.group(2))))
@@ -201,6 +211,11 @@ def atributos(texto, titulo=''):
         a['familia'] = fam
     if fam in ('cable', 'cable_datos', None):
         form = formacion_cable(norm(titulo)) or formacion_cable(n)
+        if not form and fam == 'cable':
+            # 'Conductor H07Z1-K (AS) 2,5 mm2 Cu': sección sin '1x' delante
+            m = re.search(r'(?<![\d.,x])(\d{1,3}(?:[.,]\d+)?)\s*mm2\b', n)
+            if m and _f(m.group(1)) in SECCIONES_NORMALIZADAS:
+                form = [(1, _f(m.group(1)))]
         if form:
             a['formacion'] = form
             a['seccion'] = form[0][1]
@@ -421,6 +436,11 @@ def revisar_partida(partida, titulo=''):
     texto = partida.descripcion or ''
     nt, nd = norm(titulo), norm(texto)
     out = []
+    for f in re.findall(r'\d\s*x?\s*\([\dx()+,.\s]*', nd):
+        if f.count('(') > f.count(')'):
+            out.append('Formación de cable con un paréntesis sin cerrar ("%s"): se ha interpretado como %s. Comprobar.'
+                       % (f.strip(), ' + '.join('%dx%s' % (c, _num(x)) for c, x in formacion_cable(nd)) or '?'))
+            break
     for ip in re.findall(r'\bip[- ]?(\d{2,})\b', nd + ' ' + nt):
         if len(ip) != 2 or int(ip[0]) > 6:
             out.append('Grado de protección "IP%s" no existe (IP lleva 2 cifras: sólidos 0-6 y líquidos 0-9).' % ip)
@@ -447,8 +467,10 @@ def revisar_partida(partida, titulo=''):
         for c, s in at.get('formacion') or []:
             if s not in SECCIONES_NORMALIZADAS:
                 out.append('Sección de cable %s mm² no normalizada.' % _num(s))
-        if re.search(r'\d\s*x\s*\(\s*\d\s*x\s*\(', nd):
-            out.append('Formación de cable con paréntesis anidados (p. ej. 4x(4x(1x240))): texto mal escrito, aclarar.')
+        if re.search(r'\d\s*x\s*\(\s*\d\s*x\s*\(', nd) and not any('sin cerrar' in x for x in out):
+            out.append('Formación de cable con paréntesis anidados (%s): se interpreta como %s conductores; '
+                       'confirmar con el cliente.' % (re.search(r'\d\s*x\s*\([\dx()+,.\s]*', nd).group(0).strip(),
+                                                      ' + '.join('%dx%s' % (c, _num(x)) for c, x in formacion_cable(nd))))
         tc, ten = at.get('tipo_cable'), at.get('tension')
         if tc == 'H07Z1-K' and ten == '0,6/1kV':
             out.append('H07Z1-K es un cable de 450/750 V, no de 0,6/1 kV como indica el texto.')

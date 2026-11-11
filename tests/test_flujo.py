@@ -19,6 +19,7 @@ CLIENTE = os.path.join(ALB, 'cliente', 'DOC20250604121822Pliego de prescripcione
 ELECTROFIL = os.path.join(ALB, 'proveedores', 'electrofil', 'OFE_160_70922.pdf')
 MERIDA_ELECTROFIL = os.path.join(REPO, 'obras', 'mueso merida', 'proveedores', 'electrofil',
                                  'OFERTA_ELECTROFIL_160_79996.pdf')
+JUNTA = os.path.join(REPO, 'obras', 'bases_precios', 'BASE_DE_DATOS_PRECIOS_JUNTA_EXTREM.xlsx')
 PUERTO = 8791
 BASE = 'http://127.0.0.1:%d' % PUERTO
 
@@ -51,6 +52,15 @@ def pedir(ruta, datos=None, ficheros=None, campos=None):
         raise AssertionError('%s -> HTTP %s: %s' % (ruta, e.code, e.read().decode('utf-8', 'replace')))
 
 
+def nombre_descarga(ruta):
+    with urllib.request.urlopen(BASE + ruta, timeout=600) as r:
+        cd = r.headers.get('Content-Disposition') or ''
+        datos = r.read()
+    from urllib.parse import unquote as uq
+    nom = cd.split("filename*=UTF-8''")[-1] if "filename*=" in cd else ''
+    return uq(nom), datos
+
+
 def subir(ruta, ficheros, campos=None):
     t = pedir(ruta, ficheros=ficheros, campos=campos)['trabajo']
     while True:
@@ -74,7 +84,7 @@ def main():
     time.sleep(2)
     obra = 'Prueba'
     O = '/api/obra/' + obra
-    pedir('/api/obras', {'nombre': obra})
+    pedir('/api/obras', {'nombre': obra, 'cod': 'E0001', 'cliente': 'Cliente Prueba'})
     subir(O + '/cliente', [CLIENTE])
     d = pedir(O)
     comprobar(d.get('pendiente_capitulos'), 'tras subir el presupuesto se piden los capítulos')
@@ -122,6 +132,48 @@ def main():
     # 6) caso aprendido
     pedir(O + '/caso', {'material': destino, 'observacion': 'prueba', 'proveedor': '', 'cantidad': ''})
     comprobar(len(pedir('/api/casos')) == 1, 'anotar un caso')
+    # 7) nombre de los Excel: Cod_Obra.Cliente.descripcion.tipo.DD-MM-YYYY
+    nom, _ = nombre_descarga(O + '/excel')
+    hoy = time.strftime('%d-%m-%Y')
+    comprobar(nom == 'E0001.CLIENTE_PRUEBA.PRUEBA.Comparativa.%s.xlsx' % hoy, 'nombre del Excel: %s' % nom)
+    pedir(O + '/datos', {'cod': 'E0123', 'cliente': 'Constructora', 'descripcion': 'Museo Romano Mérida'})
+    nom, _ = nombre_descarga(O + '/excel')
+    comprobar(nom.startswith('E0123.CONSTRUCTORA.MUSEO_ROMANO_MERIDA.Comparativa.'), 'cambiar los datos de la obra: %s' % nom)
+    # 8) petición de oferta sin precios -> el proveedor la rellena -> se sube como oferta y se casa por código
+    import openpyxl
+    from automatizador.exportadores import excel_peticion as P
+    nom, xlsx = nombre_descarga(O + '/peticion')
+    comprobar('.Peticion_oferta.' in nom and xlsx[:2] == b'PK', 'se genera la petición de oferta: %s' % nom)
+    tmp = tempfile.mkdtemp(prefix='peticion_')
+    ruta = os.path.join(tmp, 'peticion_rellena.xlsx')
+    with open(ruta, 'wb') as f:
+        f.write(xlsx)
+    wb = openpyxl.load_workbook(ruta)
+    ws = wb.worksheets[0]
+    rellenas = 0
+    for r in range(P.F_CABECERA + 1, ws.max_row + 1):
+        if ws.cell(r, P.C_COD).value and rellenas < 12:
+            ws.cell(r, P.C_PRECIO).value = 10 + r
+            ws.cell(r, P.C_DTO).value = 25
+            rellenas += 1
+    wb.save(ruta)
+    subir(O + '/proveedor', [ruta], {'proveedor': 'Proveedor Peticion', 'sustituir': '0'})
+    d = pedir(O)
+    ls = d['lineas']['Proveedor Peticion']['lineas']
+    comprobar(len(ls) == 12 and all(l['mat'] for l in ls) and all(l['manual'] is False or l['mat'] for l in ls),
+              'la petición rellena se casa entera por código (%d de %d)' % (sum(1 for l in ls if l['mat']), len(ls)))
+    # 9) base de precios de la Junta: referencia, no cuenta para el más barato ni el reparto
+    subir(O + '/proveedor', [JUNTA], {'proveedor': 'Junta Extremadura', 'sustituir': '0'})
+    d = pedir(O)
+    j = d['lineas']['Junta Extremadura']
+    comprobar(j['referencia'] and j['catalogo'] and 0 < len(j['lineas']) < 60,
+              'la base de la Junta entra como referencia (%d artículos usados)' % len(j['lineas']))
+    comprobar(all(m['mejor']['prov'] != 'Junta Extremadura' for m in d['materiales']), 'la Junta no es "más barato"')
+    comprobar(d['reparto']['filas'] and all(x['proveedor'] != 'Junta Extremadura' for x in d['reparto']['filas']),
+              'reparto entre distribuidores: %s' % ', '.join('%s %.2f' % (x['proveedor'], x['importe'])
+                                                              for x in d['reparto']['filas']))
+    nom, xlsx = nombre_descarga(O + '/desglose/' + j['docs'][0]['huella'])
+    comprobar('Desglose' in nom and xlsx[:2] == b'PK', 'desglose de la base de precios: %s' % nom)
     print('TODO CORRECTO')
 
 

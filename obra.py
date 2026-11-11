@@ -21,7 +21,7 @@ from .modelo import doc_a_dict, doc_de_dict
 from . import emparejar as M
 from .lectores import bc3, pdf_oferta, pdf_presupuesto
 
-VERSION_CACHE = 7
+VERSION_CACHE = 8
 
 
 def carpeta_datos():
@@ -30,6 +30,9 @@ def carpeta_datos():
 
 def ruta_bbdd():
     return os.path.join(C.carpeta_local(), 'precios.db')
+
+
+PREFIJO_PETICION = 'PET:'      # código que lleva cada fila de una petición de oferta (exportadores/excel_peticion.py)
 
 
 def clave_mat(m):
@@ -54,7 +57,8 @@ def _describir(tipo, d):
             'cliente_anadir': 'añadió al presupuesto del cliente %s' % ', '.join(
                 x['archivo'].split('/')[-1] for x in d.get('archivos') or []),
             'cliente_quitar': 'quitó del presupuesto del cliente %s' % d.get('archivo', '').split('/')[-1],
-            'quitar_oferta': 'quitó la oferta %s de %s' % (d.get('archivo', '').split('/')[-1], d.get('nombre'))
+            'quitar_oferta': 'quitó la oferta %s de %s' % (d.get('archivo', '').split('/')[-1], d.get('nombre')),
+            'datos': 'puso los datos de la obra (código %s, cliente %s)' % (d.get('cod') or '-', d.get('cliente') or '-')
             }.get(tipo, tipo)
 
 
@@ -94,8 +98,8 @@ def leer_oferta(ruta, progreso=None):
     if ext == '.pdf':
         return pdf_oferta.leer(ruta, progreso)
     if ext in ('.xlsx', '.xlsm'):
-        from .lectores import excel_erp, excel_generico
-        for lector in (excel_erp, excel_generico):
+        from .lectores import excel_erp, excel_generico, base_precios, excel_peticion
+        for lector in (base_precios, excel_peticion, excel_erp, excel_generico):
             try:
                 if lector.reconoce(ruta):
                     return lector.leer(ruta)
@@ -122,7 +126,8 @@ class Obra:
     def recargar(self):
         e = {'nombre': os.path.basename(self.carpeta), 'creada': None, 'cliente': None, 'proveedores': [],
              'manuales': {}, 'historial': [], 'capitulos': None,      # capitulos None = aún sin elegir
-             'ofertas': [], 'capitulos_previos': None, 'capitulos_conocidos': []}
+             'ofertas': [], 'capitulos_previos': None, 'capitulos_conocidos': [],
+             'datos': {'cod': '', 'cliente': '', 'descripcion': ''}}       # para nombrar los Excel
         for ev in C.leer_eventos(self.dir_eventos):
             d, t = ev.get('datos') or {}, ev.get('tipo')
             quien = ev.get('usuario')
@@ -162,6 +167,8 @@ class Obra:
                 e['manuales'].pop(d['nombre'], None)
             elif t == 'quitar_oferta':
                 e['ofertas'] = [o for o in e['ofertas'] if o['huella'] != d['huella']]
+            elif t == 'datos':
+                e['datos'] = {k: (d.get(k) or '').strip() for k in ('cod', 'cliente', 'descripcion')}
             elif t == 'capitulos':
                 e['capitulos'] = list(d.get('incluidos') or [])
                 e['capitulos_conocidos'] = list(d.get('conocidos') or [])
@@ -214,7 +221,7 @@ class Obra:
         return os.path.join(C.carpeta_compartida(), 'obras')
 
     @classmethod
-    def crear(cls, nombre):
+    def crear(cls, nombre, cod='', cliente=''):
         nombre = nombre.strip()
         if not nombre:
             raise ValueError('La obra necesita un nombre.')
@@ -223,7 +230,29 @@ class Obra:
         os.makedirs(carpeta, exist_ok=True)
         if not existe:
             C.escribir_evento(os.path.join(carpeta, 'eventos'), 'crear', {'nombre': nombre})
+            if cod or cliente:
+                C.escribir_evento(os.path.join(carpeta, 'eventos'), 'datos',
+                                  {'cod': cod, 'cliente': cliente, 'descripcion': nombre})
         return cls(carpeta)
+
+    def poner_datos(self, cod, cliente, descripcion):
+        self._evento('datos', {'cod': cod, 'cliente': cliente, 'descripcion': descripcion})
+
+    def nombre_excel(self, tipo, fecha=None):
+        """'Cod_Obra.Cliente.descripcion_breve.tipo_documento.DD-MM-YYYY.xlsx' (p. ej.
+        'E0123.CONSTRUCTORA.MUSEO_ROMANO_MERIDA.Comparativa.11-11-2026.xlsx'). Los puntos separan los campos, así que
+        dentro de cada campo los puntos y espacios pasan a '_'."""
+        d = self.estado.get('datos') or {}
+
+        def campo(x):
+            import unicodedata
+            x = ''.join(c for c in unicodedata.normalize('NFKD', x or '') if not unicodedata.combining(c))
+            x = re.sub(r'[\\/:*?"<>|.\s]+', '_', (x or '').strip()).strip('_')
+            return x or 'SIN'
+        fecha = fecha or datetime.date.today()
+        return '%s.%s.%s.%s.%s.xlsx' % (campo(d.get('cod')), campo(d.get('cliente')).upper(),
+                                        campo(d.get('descripcion') or self.nombre).upper(), campo(tipo),
+                                        fecha.strftime('%d-%m-%Y'))
 
     @staticmethod
     def listar():
@@ -407,12 +436,25 @@ class Obra:
                 else:
                     mid = por_cod.get(v.get('cod')) if v.get('cod') else None
                     manuales[li] = mid or v.get('id')
-            asign, sin, puntos = M.emparejar(materiales, lineas, manuales, conocidas)
+            # petición de oferta devuelta rellena: cada fila lleva el código de su material -> casado seguro
+            for l in lineas:
+                cod = (l.partida.codigo or '')
+                if cod.startswith(PREFIJO_PETICION) and l.i not in manuales:
+                    mid = por_cod.get(cod[len(PREFIJO_PETICION):])
+                    if mid:
+                        manuales[l.i] = mid
+            catalogo = all(d['doc'].tipo == 'base_precios' for d in docs)
+            if catalogo:
+                asign, sin, puntos = M.emparejar_catalogo(materiales, lineas, manuales, conocidas)
+            else:
+                asign, sin, puntos = M.emparejar(materiales, lineas, manuales, conocidas)
             ofertas = M.construir_ofertas(materiales, asign)
             provs.append({'nombre': p['nombre'], 'doc': docs[0]['doc'], 'docs': docs, 'lineas': lineas, 'asign': asign,
                           'sin': sin, 'ofertas': ofertas, 'puntos': puntos, 'archivo': docs[0]['archivo'],
-                          'huella': docs[0]['huella']})
+                          'huella': docs[0]['huella'], 'catalogo': catalogo,
+                          'referencia': all((d['doc'].condiciones or {}).get('referencia') for d in docs)})
         res = Resultado(self, cli, materiales, provs)
+        res.comparar_referencias()
         if bbdd:
             avisar('Guardando precios en la base de datos y buscando precios históricos…')
             por_id = {m.id: m for m in materiales}
@@ -465,12 +507,52 @@ class Resultado:
     def oferta(self, prov, mid):
         return prov['ofertas'].get(mid)
 
+    @property
+    def distribuidores(self):
+        """Proveedores a los que se puede comprar (sin las bases de precios de referencia, p. ej. la de la Junta)."""
+        return [pv for pv in self.proveedores if not pv.get('referencia')]
+
+    def comparar_referencias(self):
+        """Avisa cuando el mejor distribuidor está por encima del precio de referencia (base de precios oficial)."""
+        for ref in [pv for pv in self.proveedores if pv.get('referencia')]:
+            for mid, o in ref['ofertas'].items():
+                m = next((x for x in self.materiales if x.id == mid), None)
+                nom, mejor = self.mas_barato(m) if m else (None, None)
+                if o.precio and mejor and mejor > o.precio * 1.05:
+                    o.alertas.append(('baja', 'Precio de referencia %.2f €: el mejor distribuidor (%s, %.2f €) está un '
+                                              '%.0f%% por encima.' % (o.precio, nom, mejor, (mejor / o.precio - 1) * 100)))
+
+    def reparto(self):
+        """Comprando cada material al distribuidor más barato: cuánto se le adjudica a cada uno.
+        -> (filas [{proveedor, materiales, importe, pct, total_propio, ofertados}], total, sin_oferta)"""
+        por = {pv['nombre']: {'proveedor': pv['nombre'], 'materiales': 0, 'importe': 0.0,
+                              'ofertados': sum(1 for o in pv['ofertas'].values() if o.precio is not None),
+                              'total_propio': round(sum(o.importe or 0 for o in pv['ofertas'].values()), 2)}
+               for pv in self.distribuidores}
+        sin = 0
+        for m in self.materiales:
+            mejores = [(pv['ofertas'][m.id].precio, k, pv['nombre']) for k, pv in enumerate(self.distribuidores)
+                       if m.id in pv['ofertas'] and pv['ofertas'][m.id].precio]
+            if not mejores:
+                sin += 1
+                continue
+            precio, _, nom = min(mejores)
+            o = next(pv for pv in self.distribuidores if pv['nombre'] == nom)['ofertas'][m.id]
+            por[nom]['materiales'] += 1
+            por[nom]['importe'] += o.importe if o.importe is not None else precio * (m.cantidad or 0)
+        total = round(sum(x['importe'] for x in por.values()), 2)
+        filas = sorted(por.values(), key=lambda x: -x['importe'])
+        for x in filas:
+            x['importe'] = round(x['importe'], 2)
+            x['pct'] = x['importe'] / total if total else 0.0
+        return filas, total, sin
+
     def mas_barato(self, m, solo_principal=False):
         """(proveedor, precio) más barato entre las ofertas de esta obra para el material m.
         solo_principal: precio de la línea principal (sin accesorios ni cánones), para comparar con la BBDD."""
         def precio(o):
             return o.principal.partida.precio if solo_principal else o.precio
-        mejores = [(precio(pv['ofertas'][m.id]), pv['nombre']) for pv in self.proveedores
+        mejores = [(precio(pv['ofertas'][m.id]), pv['nombre']) for pv in self.distribuidores
                    if m.id in pv['ofertas'] and precio(pv['ofertas'][m.id])]
         if not mejores:
             return None, None

@@ -88,7 +88,6 @@ def escribir(res, ruta):
     # ---------------------------------------------------------------- cabecera
     ws['A1'] = 'Comparativa de ofertas — %s' % res.obra.nombre
     ws['A1'].font = F_TITULO
-    _poner_logo(ws, 'J1')
     caps = res.obra.estado.get('capitulos')
     ws['A2'] = 'Presupuesto del cliente: %s  ·  %d partidas, %d materiales%s  ·  Generado el %s' % (
         res.cliente.nombre or res.obra.estado['cliente']['archivo'], len({m.n for m in res.materiales}),
@@ -114,7 +113,11 @@ def escribir(res, ruta):
         for j, t in enumerate(BLOQUE):
             _cab(ws, F_COL, c_ini[k] + j, t, relleno)
         ws.merge_cells(start_row=F_HDR, start_column=c_ini[k], end_row=F_HDR, end_column=c_ini[k] + len(BLOQUE) - 1)
-        _cab(ws, F_HDR, c_ini[k], pv['nombre'].upper(), relleno)
+        _cab(ws, F_HDR, c_ini[k], pv['nombre'].upper() + (' (REFERENCIA)' if pv.get('referencia') else ''), relleno)
+        if pv.get('referencia'):
+            ws.cell(F_HDR, c_ini[k]).comment = Comment('Base de precios de referencia: se compara, pero no cuenta para '
+                                                       'el "Más bajo" ni para el reparto entre distribuidores.',
+                                                       'Automatizador')
     for j, t in enumerate(FINALES):
         _cab(ws, F_COL, c_fin + j, t, R_CAB)
     ws.merge_cells(start_row=F_HDR, start_column=c_fin, end_row=F_HDR, end_column=c_fin + len(FINALES) - 1)
@@ -189,7 +192,8 @@ def escribir(res, ruta):
                 c = c_ini[k]
                 o = pv['ofertas'].get(mm.id)
                 lp, lq, li = L(c + 3), L(c + 1), L(c + 4)
-                precios_ref.append('%s%d' % (lp, r))
+                if not pv.get('referencia'):
+                    precios_ref.append(('%s%d' % (lp, r), pv['nombre']))
                 if o:
                     cc = ws.cell(r, c, o.codigos if o.codigos.replace('(s/c)', '').strip(' +') else
                                  '(sin código) ' + o.principal.partida.descripcion[:40])
@@ -222,11 +226,10 @@ def escribir(res, ruta):
                 for j in range(len(BLOQUE)):
                     ws.cell(r, c + j).border = BORDE
             # columnas finales
-            lista = ','.join(precios_ref)
+            lista = ','.join(ref for ref, _ in precios_ref)
             if precios_ref:
-                nombres = [pv['nombre'] for pv in provs]
                 expr = '""'
-                for ref, nom in reversed(list(zip(precios_ref, nombres))):
+                for ref, nom in reversed(precios_ref):
                     expr = 'IF(%s=MIN(%s),"%s",%s)' % (ref, lista, nom.replace('"', "'"), expr)
                 ws.cell(r, c_fin, '=IF(COUNT(%s)=0,"",%s)' % (lista, expr))
                 ws.cell(r, c_fin + 1, '=IF(COUNT(%s)=0,"",MIN(%s))' % (lista, lista))
@@ -305,9 +308,10 @@ def escribir(res, ruta):
         ws.cell(r, c_fin + 1).number_format = EUR4
         ws.cell(r, c_fin + 2).number_format = EUR
         ws.cell(r, c_fin + 3).number_format = EUR4
-    if np_:
-        refs = ','.join('$%s%d' % (L(c_ini[k] + 3), primera_datos) for k in range(np_))
-        for k in range(np_):
+    dist = [k for k in range(np_) if not provs[k].get('referencia')]
+    if dist:
+        refs = ','.join('$%s%d' % (L(c_ini[k] + 3), primera_datos) for k in dist)
+        for k in dist:
             for desp in (3, 4):
                 col_l = L(c_ini[k] + desp)
                 prec = '$%s%d' % (L(c_ini[k] + 3), primera_datos)
@@ -317,24 +321,12 @@ def escribir(res, ruta):
     ws.auto_filter.ref = 'A%d:%s%d' % (F_COL, L(c_fin + len(FINALES) - 1), ultima_datos)
 
     _hoja_resumen(wb, res, grupos, c_ini, c_fin, primera_datos, ultima_datos, c_capfila)
+    _reparto(wb['Resumen'], res, c_ini, c_fin, primera_datos, ultima_datos)
     _hoja_alertas(wb, res, alertas)
     _hoja_lineas(wb, res)
     _hoja_bbdd(wb, res)
     wb.save(ruta)
     return ruta
-
-
-def _poner_logo(ws, celda, lado=58):
-    """Logo de la empresa en la cabecera de la hoja (si el fichero de logo está disponible)."""
-    import os
-    ruta = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'recursos', 'logo.png')
-    try:
-        from openpyxl.drawing.image import Image as Imagen
-        img = Imagen(ruta)
-        img.width = img.height = lado
-        ws.add_image(img, celda)
-    except Exception:
-        pass
 
 
 def _cab(ws, r, c, texto, relleno):
@@ -363,7 +355,6 @@ def _hoja_resumen(wb, res, grupos, c_ini, c_fin, f_ini, f_fin, c_capfila):
     provs = res.proveedores
     ws['A1'] = 'Resumen por capítulo — %s' % res.obra.nombre
     ws['A1'].font = F_TITULO
-    _poner_logo(ws, 'H1')
     ws['A2'] = ('Importes calculados con las cantidades de material del cliente. "Dif." = importe cliente − importe '
                 'proveedor en las partidas que ese proveedor oferta. "Partidas ofertadas" cuenta los materiales con precio.')
     ws['A2'].font = F_GRIS
@@ -442,6 +433,48 @@ def _hoja_resumen(wb, res, grupos, c_ini, c_fin, f_ini, f_fin, c_capfila):
     ws.freeze_panes = 'B5'
 
 
+def _reparto(ws, res, c_ini, c_fin, f_ini, f_fin):
+    """Reparto entre distribuidores comprando cada material al más barato (fórmulas sobre la Comparativa)."""
+    r = ws.max_row + 3
+    ws.cell(r, 1, 'Reparto entre distribuidores (cada material al más barato)').font = F_NEGRITA
+    ws.cell(r + 1, 1, 'Si se compra cada material al distribuidor con el unitario más bajo: cuánto se adjudica a cada '
+                      'uno. "Si se le compra todo lo que oferta" = su total en la Comparativa. Las bases de precios de '
+                      'referencia no cuentan.').font = F_GRIS
+    r += 3
+    cab = ['Distribuidor', 'Materiales adjudicados', 'Importe adjudicado', '% del total', 'Materiales que oferta',
+           'Si se le compra todo lo que oferta']
+    for i, t in enumerate(cab, 1):
+        _cab(ws, r, i, t, R_CAB)
+    ws.row_dimensions[r].height = 30
+    comp = "'Comparativa'!"
+    rng = lambda col: '%s$%s$%d:$%s$%d' % (comp, L(col), f_ini, L(col), f_fin)   # noqa: E731
+    ini = r + 1
+    dist = [(k, pv) for k, pv in enumerate(res.proveedores) if not pv.get('referencia')]
+    fin = ini + len(dist) - 1
+    for j, (k, pv) in enumerate(dist):
+        rr = ini + j
+        ws.cell(rr, 1, pv['nombre'])
+        ws.cell(rr, 2, '=COUNTIFS(%s,$A%d)' % (rng(c_fin), rr))
+        ws.cell(rr, 3, '=SUMIFS(%s,%s,$A%d)' % (rng(c_fin + 2), rng(c_fin), rr))
+        ws.cell(rr, 4, '=IF(SUM($C$%d:$C$%d)=0,"",C%d/SUM($C$%d:$C$%d))' % (ini, fin, rr, ini, fin))
+        ws.cell(rr, 5, '=COUNT(%s)' % rng(c_ini[k] + 3))
+        ws.cell(rr, 6, '=SUMIFS(%s,%s,"<>")' % (rng(c_ini[k] + 4), rng(8)))    # solo filas de material
+    rt = fin + 1
+    ws.cell(rt, 1, 'TOTAL (mejor combinación)')
+    ws.cell(rt, 2, '=SUM(B%d:B%d)' % (ini, fin))
+    ws.cell(rt, 3, '=SUM(C%d:C%d)' % (ini, fin))
+    ws.cell(rt + 1, 1, 'Materiales sin oferta de ningún distribuidor')
+    ws.cell(rt + 1, 2, '=COUNTIFS(%s,"<>",%s,"")' % (rng(5), rng(c_fin)))
+    for rr in range(ini, rt + 2):
+        for c in range(1, 7):
+            cel = ws.cell(rr, c)
+            cel.border = BORDE
+            cel.font = F_NEGRITA if rr == rt else F_NORMAL
+            if rr == rt:
+                cel.fill = R_TOTAL
+            cel.number_format = {3: EUR, 4: '0.0%', 6: EUR}.get(c, '0')
+
+
 def _hoja_alertas(wb, res, alertas):
     ws = wb.create_sheet('Alertas')
     ws['A1'] = 'Alertas — revisar antes de decidir'
@@ -488,6 +521,8 @@ def _hoja_lineas(wb, res):
     for pv in res.proveedores:
         por_linea = {a.linea.i: a for a in pv['asign']}
         for l in pv['lineas']:
+            if pv.get('catalogo') and l.i not in por_linea:
+                continue                   # base de precios: solo los artículos que se han usado
             p = l.partida
             a = por_linea.get(l.i)
             m = mats.get(a.material_id) if a else None
