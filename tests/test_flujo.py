@@ -265,6 +265,20 @@ def main():
     of = m_det['prov'].get('Electrofil') or {}
     comprobar(portes['mat'] == det and of.get('aprendido') and 'Aplicado por lo aprendido' in of['aprendido'],
               'lo que se CASÓ a mano en una obra se aplica solo en otra, explicado: %s' % (of.get('aprendido') or '-')[:110])
+    # 12) fase 3: ficha por partida (precio esperado y antecedentes de la otra obra) y hoja del Excel
+    d2 = pedir(O2)
+    mid = next(m['id'] for m in d2['materiales'] if 'Electrofil' in m['prov'] and m['n'] == 2)
+    f = pedir(O2 + '/ficha/' + mid)
+    comprobar(f['que_es']['familia'] and f['ofertas'] and 'riesgo' in f, 'ficha de la partida: %s · riesgo %s'
+              % (f['que_es']['familia'], f['riesgo']))
+    comprobar(f['antecedentes'] and f['antecedentes'][0]['obra'] == 'Prueba',
+              'antecedentes: la misma partida en la otra obra (%d %%)' % round(f['antecedentes'][0]['parecido'] * 100))
+    comprobar(f['precio_esperado'] and f['precio_esperado']['n'] >= 2,
+              'precio esperado: %s € (%s precios)' % ((f['precio_esperado'] or {}).get('valor'),
+                                                     (f['precio_esperado'] or {}).get('n')))
+    comprobar(isinstance(d2.get('revisar'), list), 'lista de partidas a revisar (%d)' % len(d2['revisar']))
+    wb = openpyxl.load_workbook(io.BytesIO(pedir(O2 + '/excel')))
+    comprobar('Análisis por partida' in wb.sheetnames, 'hoja "Análisis por partida" en el Excel')
     ea = pedir('/api/aprendizaje')
     comprobar(ea['muestras'] > 0 and ea['decisiones'] > 0,
               'modelo de confianza: %d decisiones, %d muestras (%d aciertos / %d errores), entrenado: %s %s'

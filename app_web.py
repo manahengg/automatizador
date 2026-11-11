@@ -165,6 +165,7 @@ def datos_obra(o):
                     'confianza': _n(of.confianza, 3), 'aprendido': of.aprendido, 'origen': of.origen,
                     'dcant': M.comparacion_cantidad(of.cant_prov, m.cantidad)}
         fila['aprendido'] = r.avisos_aprendidos(m)
+        fila['riesgo'] = (r.fichas.get(m.id) or {}).get('riesgo')
         nom, pr = r.mas_barato(m)
         fila['mejor'] = {'prov': nom, 'precio': _n(pr, 4), 'importe': _n(pr * m.cantidad if pr else None)}
         h = r.historico.get(m.id)
@@ -205,7 +206,10 @@ def datos_obra(o):
     filas_rep, total_rep, sin_rep = r.reparto()
     for pv in provs:
         totales[pv['nombre']]['referencia'] = bool(pv.get('referencia'))
-    base.update(reparto={'filas': filas_rep, 'total': total_rep, 'sin': sin_rep}, totales_prov=r.totales_proveedores())
+    from . import analisis_partida as AP
+    base.update(reparto={'filas': filas_rep, 'total': total_rep, 'sin': sin_rep}, totales_prov=r.totales_proveedores(),
+                revisar=[{k: f[k] for k in ('id', 'n', 'codigo', 'resumen', 'riesgo', 'motivos')}
+                         for f in AP.a_revisar(r.fichas)])
     base.update(materiales=mats, lineas=lineas, total_cliente=total_cli, totales=totales,
                 cliente_nombre=r.cliente.nombre, avisos_cliente=[a.texto for a in r.cliente.avisos if a.nivel != 'info'])
     return base
@@ -464,6 +468,15 @@ def servir(puerto=8765, abrir=True):
             m = re.fullmatch(r'/api/obra/([^/]+)/excel', ruta)
             if m:
                 return self._proteger(lambda: self._excel(Obra.abrir(m.group(1))))
+            m = re.fullmatch(r'/api/obra/([^/]+)/ficha/([^/]+)', ruta)
+            if m:
+                def ficha():
+                    r = analisis(Obra.abrir(m.group(1)))
+                    f = r.fichas.get(m.group(2))
+                    if not f:
+                        raise ValueError('No existe esa partida.')
+                    self._json(f)
+                return self._proteger(ficha)
             m = re.fullmatch(r'/api/obra/([^/]+)/pedido', ruta)
             if m:
                 prov = (q.get('prov') or [''])[0]

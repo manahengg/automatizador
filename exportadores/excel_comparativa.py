@@ -352,6 +352,7 @@ def escribir(res, ruta):
     _hoja_resumen(wb, res, grupos, c_ini, c_fin, primera_datos, ultima_datos, c_capfila)
     _reparto(wb['Resumen'], res, c_ini, c_fin, primera_datos, ultima_datos)
     _hoja_alertas(wb, res, alertas)
+    _hoja_analisis(wb, res)
     _hoja_lineas(wb, res)
     _hoja_bbdd(wb, res)
     wb.save(ruta)
@@ -502,6 +503,61 @@ def _reparto(ws, res, c_ini, c_fin, f_ini, f_fin):
             if rr == rt:
                 cel.fill = R_TOTAL
             cel.number_format = {3: EUR, 4: '0.0%', 6: EUR}.get(c, '0')
+
+
+def _hoja_analisis(wb, res):
+    """Una fila por material con su ficha de análisis (fase 3), de más a menos riesgo."""
+    fichas = getattr(res, 'fichas', None) or {}
+    if not fichas:
+        return
+    ws = wb.create_sheet('Análisis por partida')
+    ws['A1'] = 'Análisis partida a partida — %s' % res.obra.nombre
+    ws['A1'].font = F_TITULO
+    ws['A2'] = ('Ordenado de más a menos riesgo. "Precio esperado" = mediana de lo pagado/ofertado antes por el mismo '
+                'material o partidas parecidas de otras obras y la base de referencia. "Confianza" = probabilidad de '
+                'acierto del emparejamiento según lo aprendido de vuestras decisiones.')
+    ws['A2'].font = F_GRIS
+    cab = ['Riesgo', 'Motivos', 'Nº', 'Código', 'Partida', 'Qué es', 'Material y cantidad', 'Comprobaciones del cliente',
+           'Más barato', 'Unitario más barato', 'Precio esperado', 'Nº precios', 'Desviación vs esperado', 'Confianza',
+           'Antecedentes en otras obras', 'Lo aprendido']
+    for i, t in enumerate(cab, 1):
+        _cab(ws, 4, i, t, R_CAB)
+    ws.row_dimensions[4].height = 30
+    r = 5
+    for f in sorted(fichas.values(), key=lambda f: (-f['riesgo'], f['n'])):
+        q, pe, mj = f['que_es'], f['precio_esperado'], f['mejor']
+        desv = (mj['precio'] / pe['valor'] - 1) if pe and mj['precio'] else None
+        aprendido = [o['proveedor'] + ': ' + o['aprendido'] for o in f['ofertas'] if o.get('aprendido')] + f['aprendido']
+        vals = [f['riesgo'], ' · '.join(f['motivos']), f['id'], f['codigo'], f['resumen'][:200],
+                q['familia'] + (' · ' + ' · '.join(q['caracteristicas']) if q['caracteristicas'] else ''),
+                '%s · %s %s%s' % (q['material'], ('%g' % (q['cantidad'] or 0)).replace('.', ','), q['unidad'] or '',
+                                   (' (%s)' % q['nota']) if q['nota'] else ''),
+                '\n'.join(f['comprobaciones']), mj['proveedor'] or '', mj['precio'], pe['valor'] if pe else None,
+                pe['n'] if pe else None, desv, f['confianza'],
+                '\n'.join('%s · %s %s · %d %% · %s %s' % (a['obra'], a['codigo'] or '', (a['resumen'] or a['texto'] or '')[:60],
+                                                          round(a['parecido'] * 100), a['mejor_proveedor'] or '—',
+                                                          ('%.4g €' % a['mejor_precio']) if a['mejor_precio'] else '')
+                          for a in f['antecedentes'][:3]),
+                '\n'.join(aprendido)[:1000]]
+        for i, v in enumerate(vals, 1):
+            c = ws.cell(r, i, v)
+            c.font, c.border, c.alignment = F_NORMAL, BORDE, ENVOLVER
+        ws.cell(r, 10).number_format = EUR4
+        ws.cell(r, 11).number_format = EUR4
+        ws.cell(r, 13).number_format = '+0%;-0%;0%'
+        ws.cell(r, 14).number_format = '0%'
+        c = ws.cell(r, 1)
+        c.font = Font(name=FUENTE, size=10, bold=True, color='C00000' if f['riesgo'] >= 50 else
+                      ('B07000' if f['riesgo'] >= 30 else '2E7D32'))
+        if f['riesgo'] >= 50:
+            c.fill = R_NARANJA
+        elif f['riesgo'] >= 30:
+            c.fill = R_AMARILLO
+        r += 1
+    for i, w in enumerate([7, 30, 6, 12, 40, 30, 32, 35, 14, 11, 11, 8, 10, 9, 50, 50], 1):
+        ws.column_dimensions[L(i)].width = w
+    ws.freeze_panes = 'C5'
+    ws.auto_filter.ref = 'A4:%s%d' % (L(len(cab)), r - 1)
 
 
 def _hoja_alertas(wb, res, alertas):

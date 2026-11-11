@@ -497,6 +497,8 @@ class Obra:
                                           [l for l in pv['lineas'] if l.huella == d['huella']], asignado)
             res.consultar_historico(bbdd)
             res.registrar_y_buscar_parecidas(bbdd)
+        from . import analisis_partida as AP
+        AP.analizar(res)                                    # ficha y riesgo de cada partida (fase 3)
         return res
 
 
@@ -513,6 +515,7 @@ class Resultado:
         self.optimo_fv = {}      # material_id -> [(coste, nº módulos, precio BBDD)]  mejor forma de llegar a los kWp
         self.avisos_referencia = {}   # material_id -> [texto]  base de precios más barata que los distribuidores
         self.parecidas = {}           # material_id -> [partidas parecidas de otras obras] (fase 1)
+        self.fichas = {}              # material_id -> ficha de análisis de la partida (fase 3)
 
     def registrar_y_buscar_parecidas(self, bbdd):
         """Guarda las partidas de esta obra en el historial y busca, para cada una, las PARECIDAS de otras obras

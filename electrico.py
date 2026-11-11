@@ -440,7 +440,7 @@ def revisar_partida(partida, titulo=''):
     texto = partida.descripcion or ''
     nt, nd = norm(titulo), norm(texto)
     out = []
-    for f in re.findall(r'\d\s*x?\s*\([\dx()+,.\s]*', nd):
+    for f in re.findall(r'\d\s*x?\s*\(\s*\d+\s*x[\dx()+,.\s]*', nd):     # formación tipo '4x(4x(1x240)'
         if f.count('(') > f.count(')'):
             out.append('Formación de cable con un paréntesis sin cerrar ("%s"): se ha interpretado como %s. Comprobar.'
                        % (f.strip(), ' + '.join('%dx%s' % (c, _num(x)) for c, x in formacion_cable(nd)) or '?'))
