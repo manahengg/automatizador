@@ -220,8 +220,12 @@ def escribir(res, ruta):
                 if o:
                     cc = ws.cell(r, c, o.codigos if o.codigos.replace('(s/c)', '').strip(' +') else
                                  '(sin código) ' + o.principal.partida.descripcion[:40])
-                    cc.comment = Comment(('%s\n\nPuntuación %.2f · %s' % (o.descripcion[:500], o.puntuacion, o.estado)),
-                                         pv['nombre'])
+                    cc.comment = Comment(('%s\n\nPuntuación %.2f · %s%s%s' % (
+                        o.descripcion[:500], o.puntuacion, o.estado,
+                        ' · confianza %d %%' % round(o.confianza * 100) if o.confianza is not None else '',
+                        '\n\n' + o.aprendido if o.aprendido else '')), pv['nombre'])
+                    if o.aprendido:
+                        textos.append('APRENDIDO %s: %s' % (pv['nombre'], o.aprendido))
                     if o.cant_prov is not None:
                         ws.cell(r, c + 1, o.cant_prov)
                     ws.cell(r, c + 2, '=IF({0}{1}="","",{0}{1}-H{1})'.format(lq, r))

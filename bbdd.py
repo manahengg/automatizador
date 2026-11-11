@@ -236,6 +236,13 @@ class BBDD:
                                {'proveedor': proveedor, 'clave_linea': clave, 'destinos': destinos})
         self._aplicar(ev)
 
+    def olvidar_equivalencia(self, proveedor, linea):
+        """Deshacer una corrección: la equivalencia aprendida de esa línea deja de aplicarse (en todos los PCs)."""
+        clave = cod(linea.referencia) or dnorm(linea.partida.descripcion)
+        ev = C.escribir_evento(self.dir_conocimiento(), 'equivalencia_olvidada',
+                               {'proveedor': proveedor, 'clave_linea': clave})
+        self._aplicar(ev)
+
     @staticmethod
     def dir_conocimiento():
         return os.path.join(C.carpeta_compartida(), 'conocimiento')
@@ -256,6 +263,9 @@ class BBDD:
                            (ev['cuando'], d.get('obra'), d.get('proveedor'), d.get('familia'), d.get('clave_material'),
                             d.get('atributos'), d.get('texto_material'), d.get('oferta'), d['observacion'],
                             d.get('cantidad_correcta'), ev['id'], ev.get('usuario')))
+        elif t == 'equivalencia_olvidada':
+            self.c.execute('DELETE FROM equivalencia WHERE clave_linea=? AND proveedor_id=(SELECT id FROM proveedor '
+                           'WHERE nombre=? COLLATE NOCASE)', (d['clave_linea'], d['proveedor']))
         elif t == 'decision':
             from . import decisiones as D
             for f in D.filas_de_evento(ev):

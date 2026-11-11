@@ -247,6 +247,28 @@ def main():
                                                              '(%.2f / %.2f)' % (total_zip, d['reparto']['total']))
     nom, xlsx = nombre_descarga('/api/base/%s/desglose' % hj)
     comprobar('Desglose' in nom and xlsx[:2] == b'PK', 'desglose de la base de precios: %s' % nom)
+    # 11) fase 2: lo aprendido en una obra se aplica en otra
+    O2 = '/api/obra/Otra_obra'
+    subir(O2 + '/proveedor', [OFERTA1], {'proveedor': 'Electrofil', 'sustituir': '0'})
+    d2 = pedir(O2)
+    l_desc = next(l for l in d2['lineas']['Electrofil']['lineas'] if l['desc'] == casada['desc'])
+    comprobar(l_desc['mat'] != casada['mat'],
+              'lo que se DESCASÓ en otra obra no se vuelve a casar solo (%s)' % casada['desc'][:40])
+    portes = next(l for l in d2['lineas']['Electrofil']['lineas'] if l['desc'].startswith('PORTES'))
+    comprobar(not portes['mat'], 'antes de aprender: "PORTES" sin casar en la obra nueva')
+    det = next(m['id'] for m in pedir(O)['materiales'] if 'DETECTOR' in m['resumen'].upper())
+    lp = next(l for l in pedir(O)['lineas']['Electrofil']['lineas'] if l['desc'].startswith('PORTES'))
+    pedir(O + '/fijar', {'proveedor': 'Electrofil', 'linea': lp['uid'], 'material': det})
+    d2 = pedir(O2)
+    portes = next(l for l in d2['lineas']['Electrofil']['lineas'] if l['desc'].startswith('PORTES'))
+    m_det = next(m for m in d2['materiales'] if m['id'] == det)
+    of = m_det['prov'].get('Electrofil') or {}
+    comprobar(portes['mat'] == det and of.get('aprendido') and 'Aplicado por lo aprendido' in of['aprendido'],
+              'lo que se CASÓ a mano en una obra se aplica solo en otra, explicado: %s' % (of.get('aprendido') or '-')[:110])
+    ea = pedir('/api/aprendizaje')
+    comprobar(ea['muestras'] > 0 and ea['decisiones'] > 0,
+              'modelo de confianza: %d decisiones, %d muestras (%d aciertos / %d errores), entrenado: %s %s'
+              % (ea['decisiones'], ea['muestras'], ea['aciertos'], ea['errores'], ea['entrenado'], ea['pesos'] or ''))
     print('TODO CORRECTO')
 
 

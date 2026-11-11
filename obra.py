@@ -407,6 +407,10 @@ class Obra:
         for m in materiales:
             por_cod.setdefault(clave_mat(m), m.id)
         conocidas = bbdd.conocidas() if bbdd else {}
+        if bbdd:
+            from . import aprendizaje as A
+            avisar('Cargando lo aprendido de las decisiones…')
+            A.cargar(bbdd)
         provs = []
         proveedores = list(self.estado['proveedores'])
         # bases de precios globales (Junta...): proveedor de referencia presente en TODAS las obras

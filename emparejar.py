@@ -289,7 +289,28 @@ def sim_semantica(l, m):
     return v, max(0.0, min(1.0, (v - float(_SEM['med'][r])) / 0.10))
 
 
-def puntuar(l, m, conocidas=None):
+_MEM = {}                     # memoria de decisiones aprendidas para esta oferta (aprendizaje.py, fase 2)
+
+
+def preparar_memoria(materiales, lineas):
+    _MEM.clear()
+    try:
+        from . import aprendizaje as A
+        x = A.preparar_memoria(materiales, lineas, lineas[0].proveedor if lineas else '')
+        if x:
+            _MEM['x'] = x
+    except Exception:
+        _MEM.clear()
+
+
+def bonificacion_aprendida(l, m):
+    if not _MEM:
+        return 0.0, None
+    from . import aprendizaje as A
+    return A.bonificacion(_MEM['x'], l, m)
+
+
+def puntuar(l, m, conocidas=None, memoria=True):
     """0..~1.5. Cuanto más alto, más seguro que la línea l es el material m."""
     s = 0.0
     a, b = _cod(l.referencia), _cod(m.codigo)
@@ -371,6 +392,8 @@ def puntuar(l, m, conocidas=None):
         k = conocidas.get((l.proveedor.lower(), _cod(l.referencia) or E.norm(l.partida.descripcion)[:60]))
         if k and (k == m.clave or k == ('cli:' + _cod(m.codigo)) or k == 'desc:' + E.norm(m.partida.resumen or m.descripcion)[:60]):
             s += 0.6
+    if memoria and _MEM:
+        s += bonificacion_aprendida(l, m)[0]      # decisiones parecidas de las personas (fase 2)
     return s
 
 
@@ -393,6 +416,7 @@ def emparejar(materiales, lineas, manuales=None, conocidas=None):
     normales = [l for l in lineas if l.i not in usadas and not l.es_canon]
     preparar_idf(materiales)
     preparar_semantica(materiales, lineas)
+    preparar_memoria(materiales, lineas)
     puntos = {}
     for l in normales:
         fila = []
@@ -528,8 +552,21 @@ def emparejar(materiales, lineas, manuales=None, conocidas=None):
         if j is not None and j in mat_por_linea:
             asign.append(Asignacion(mat_por_linea[j], l, 'canon', 1.0))
             hecho.add(l.i)
+    # lo que una persona DESCASÓ (misma línea del mismo proveedor) no se vuelve a casar solo en ninguna pasada
+    vetadas = {a.linea.i for a in asign if a.origen != 'manual' and vetado(a.linea, por_id.get(a.material_id))}
+    if vetadas:
+        asign = [a for a in asign if a.linea.i not in vetadas]
+        hecho -= vetadas
     sin = [l for l in lineas if l.i not in hecho and not (l.i in usadas and manuales.get(l.i))]
     return asign, sin, puntos
+
+
+def vetado(l, m):
+    """La pareja fue descasada por una persona (decisión parecida >= 97 % del mismo proveedor)."""
+    if not _MEM or m is None:
+        return False
+    x = _MEM['x']['pares'].get((l.i, m.id))
+    return bool(x) and x[1] < 0 and x[0] >= 0.97 and (x[2]['proveedor'] or '').lower() == _MEM['x']['proveedor']
 
 
 def _parecida(a, b):
@@ -626,14 +663,20 @@ class Oferta:
     alertas: list = dataclasses.field(default_factory=list)
     codigos: str = ''
     descripcion: str = ''
+    confianza: float = None       # probabilidad de acierto según el modelo entrenado con las decisiones (fase 2)
+    aprendido: str = None         # explicación si se ha aplicado algo aprendido
 
     @property
     def estado(self):
         if self.origen == 'manual':
             return 'manual'
-        if any(g == 'alta' for g, _ in self.alertas) or self.puntuacion < UMBRAL_SEGURO:
+        if any(g == 'alta' for g, _ in self.alertas):
             return 'revisar'
-        return 'seguro'
+        if self.confianza is not None:          # con el modelo entrenado manda su probabilidad
+            return 'seguro' if self.confianza >= 0.8 or (self.aprendido and self.origen == 'aprendido') else 'revisar'
+        if self.aprendido and self.origen == 'aprendido':
+            return 'seguro'
+        return 'revisar' if self.puntuacion < UMBRAL_SEGURO else 'seguro'
 
 
 def construir_ofertas(materiales, asignaciones):
@@ -689,6 +732,19 @@ def construir_ofertas(materiales, asignaciones):
         if nota_metros:
             o.alertas.append(('baja', 'Se oferta en piezas (%s = %s m): el unitario se ha pasado a €/m.' % (
                 nota_metros, E._num(cant))))
+        # lo aprendido de las personas y la confianza del modelo entrenado (fase 2)
+        bono, porque = bonificacion_aprendida(ppal, m)
+        if porque and bono > 0:
+            o.aprendido = porque
+            if o.origen == 'auto':
+                o.origen = 'aprendido'
+        elif porque:
+            o.aprendido = porque
+        try:
+            from . import aprendizaje as A
+            o.confianza = A.probabilidad(A.rasgos(ppal, m))
+        except Exception:
+            o.confianza = None
         o.codigos = ' + '.join(dict.fromkeys(x.referencia or '(s/c)' for x in [ppal] + extras if not x.es_canon))
         o.descripcion = ppal.partida.descripcion + (' (+%d líneas: %s)' % (
             len(extras), '; '.join(x.partida.descripcion[:40] for x in extras)) if extras else '')
@@ -800,6 +856,7 @@ def emparejar_catalogo(materiales, lineas, manuales=None, conocidas=None):
     por_id = {m.id: m for m in materiales}
     preparar_idf(materiales)
     preparar_semantica(materiales, [l for l in lineas if l.partida.precio is not None])
+    preparar_memoria(materiales, [l for l in lineas if l.partida.precio is not None])
     asign, fijados, vetadas = [], set(), set()
     por_i = {l.i: l for l in lineas}
     for li, mid in manuales.items():

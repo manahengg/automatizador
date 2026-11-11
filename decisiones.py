@@ -37,12 +37,34 @@ def desc_linea(l):
             'uid': getattr(l, 'uid', None)}
 
 
-def item(m, l, candidatos=None, antes=None, puntuacion=None):
-    """Una decisión sobre la pareja (material m, línea l). candidatos: [(línea, puntuación)] que había."""
+def item(m, l, candidatos=None, antes=None, puntuacion=None, muestras=None):
+    """Una decisión sobre la pareja (material m, línea l). candidatos: [(línea, puntuación)] que había.
+    muestras: [(rasgos, etiqueta)] para entrenar el modelo de confianza (aprendizaje.py)."""
     return {'material': desc_material(m), 'linea': desc_linea(l),
             'candidatos': [dict(desc_linea(x), punt=round(s, 3)) for x, s in (candidatos or [])][:6],
             'antes': desc_material(antes) if antes is not None else None,
-            'puntuacion': round(puntuacion, 3) if puntuacion is not None else None}
+            'puntuacion': round(puntuacion, 3) if puntuacion is not None else None,
+            'muestras': muestras or []}
+
+
+_PREP = {}
+
+
+def muestras(r, pv, l, m, positiva=True):
+    """Rasgos de la pareja decidida (y de las alternativas que había, como ejemplos de 'no') para entrenar."""
+    try:
+        from . import emparejar as M
+        from . import aprendizaje as A
+        clave = (id(r), pv['nombre'])
+        if _PREP.get('clave') != clave:              # una vez por resultado y proveedor (un pedido trae muchas)
+            M.preparar_idf(r.materiales)
+            M.preparar_semantica(r.materiales, pv['lineas'])
+            _PREP['clave'] = clave
+        if not positiva:
+            return [(A.rasgos(l, m), 0)]
+        return A.muestras_de_decision(r.materiales, pv['lineas'], l, m, pv.get('puntos'))
+    except Exception:
+        return []
 
 
 def registrar(bbdd, accion, obra, proveedor, items):

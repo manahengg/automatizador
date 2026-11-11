@@ -162,6 +162,7 @@ def datos_obra(o):
                     'codigos': of.codigos, 'desc': of.descripcion[:300], 'cant': of.cant_prov, 'precio': _n(of.precio, 4),
                     'importe': _n(of.importe), 'estado': of.estado, 'punt': _n(of.puntuacion),
                     'alertas': [{'g': g, 't': t} for g, t in of.alertas],
+                    'confianza': _n(of.confianza, 3), 'aprendido': of.aprendido, 'origen': of.origen,
                     'dcant': M.comparacion_cantidad(of.cant_prov, m.cantidad)}
         fila['aprendido'] = r.avisos_aprendidos(m)
         nom, pr = r.mas_barato(m)
@@ -210,6 +211,11 @@ def datos_obra(o):
     return base
 
 
+def _aprendido():
+    """Una decisión nueva cambia lo aprendido: hay que rehacer el análisis de TODAS las obras."""
+    VERSION['conocimiento'] += 1
+
+
 def _decision_fijar(o, r, pv, l, mat):
     """Casar (mat) o descasar (mat None) a mano la línea l: se registra con lo que la app había propuesto."""
     mats = {m.id: m for m in r.materiales}
@@ -219,19 +225,24 @@ def _decision_fijar(o, r, pv, l, mat):
         cands = sorted(((x, sc) for x in pv['lineas'] for sc, mid in (pv['puntos'].get(x.i) or []) if mid == mat.id),
                        key=lambda t: -t[1])
         sc = next((s for x, s in cands if x.uid == l.uid), None)
-        D.registrar(db(), 'casar', o.nombre, pv['nombre'], [D.item(mat, l, cands, antes, sc)])
+        D.registrar(db(), 'casar', o.nombre, pv['nombre'],
+                    [D.item(mat, l, cands, antes, sc, muestras=D.muestras(r, pv, l, mat))])
     elif antes is not None:
-        D.registrar(db(), 'descasar', o.nombre, pv['nombre'], [D.item(antes, l, puntuacion=a_antes.puntuacion)])
+        D.registrar(db(), 'descasar', o.nombre, pv['nombre'],
+                    [D.item(antes, l, puntuacion=a_antes.puntuacion, muestras=D.muestras(r, pv, l, antes, False))])
+    _aprendido()
 
 
 def _decision_pedido(o, r, prov, ids):
     """Lo que se pide a un proveedor cuenta como emparejamiento aceptado."""
     pv = next(p for p in r.proveedores if p['nombre'] == prov)
-    items = [D.item(m, pv['ofertas'][m.id].principal, puntuacion=pv['ofertas'][m.id].puntuacion)
+    items = [D.item(m, pv['ofertas'][m.id].principal, puntuacion=pv['ofertas'][m.id].puntuacion,
+                    muestras=D.muestras(r, pv, pv['ofertas'][m.id].principal, m))
              for m in r.materiales if m.id in pv['ofertas'] and (ids is None or m.id in ids)
              and pv['ofertas'][m.id].precio is not None]
     if items:
         D.registrar(db(), 'pedido', o.nombre, prov, items)
+        _aprendido()
 
 
 TRABAJOS = {}          # id -> Trabajo (subidas en curso, para la barra de progreso)
@@ -489,6 +500,12 @@ def servir(puerto=8765, abrir=True):
             m = re.fullmatch(r'/api/base/([0-9a-f]{20})/desglose', ruta)
             if m:
                 return self._proteger(lambda: self._desglose_global(m.group(1)))
+            if ruta == '/api/aprendizaje':
+                def est():
+                    from . import aprendizaje as A
+                    A.cargar(db())
+                    self._json(A.estado())
+                return self._proteger(est)
             if ruta == '/api/decisiones':
                 texto = (q.get('q') or [''])[0]
                 return self._proteger(lambda: self._json(db().decisiones(texto)))
@@ -669,7 +686,7 @@ def servir(puerto=8765, abrir=True):
             if ruta == '/api/decisiones/olvidar':
                 def olv():
                     D.olvidar(db(), self._json_cuerpo()['uid'])
-                    _CACHE.clear()
+                    _aprendido()
                     self._json({'ok': True})
                 return self._proteger(olv)
             if ruta == '/api/actualizar':
@@ -764,12 +781,17 @@ def servir(puerto=8765, abrir=True):
                         if mat:
                             db().aprender(datos['proveedor'], l, mat)
                     elif accion == 'deshacer':
+                        r = analisis(o)
+                        pv = next((p for p in r.proveedores if p['nombre'] == datos['proveedor']), None)
+                        l = pv and next((x for x in pv['lineas'] if x.uid == str(datos['linea'])), None)
                         o.deshacer(datos['proveedor'], datos['linea'])
+                        if l is not None:
+                            db().olvidar_equivalencia(datos['proveedor'], l)
                         for u in db().c.execute("SELECT uid, datos FROM decision WHERE obra=? AND proveedor=? AND activo=1 "
                                                 "AND accion IN ('casar','descasar')", (o.nombre, datos['proveedor'])).fetchall():
                             if ((json.loads(u['datos']).get('linea') or {}).get('uid')) == str(datos['linea']):
                                 D.olvidar(db(), u['uid'])
-                        _CACHE.clear()
+                        _aprendido()
                     elif accion == 'aceptar':
                         r = analisis(o)
                         n = 0
@@ -777,12 +799,13 @@ def servir(puerto=8765, abrir=True):
                             if datos.get('proveedor') and pv['nombre'] != datos['proveedor']:
                                 continue
                             ids = [datos['material']] if datos.get('material') else list(pv['ofertas'])
-                            items = [D.item(m, pv['ofertas'][m.id].principal, puntuacion=pv['ofertas'][m.id].puntuacion)
+                            items = [D.item(m, pv['ofertas'][m.id].principal, puntuacion=pv['ofertas'][m.id].puntuacion,
+                                            muestras=D.muestras(r, pv, pv['ofertas'][m.id].principal, m))
                                      for m in r.materiales if m.id in ids and m.id in pv['ofertas']]
                             if items:
                                 D.registrar(db(), 'aceptar', o.nombre, pv['nombre'], items)
                                 n += len(items)
-                        _CACHE.clear()
+                        _aprendido()
                         return self._json({'ok': True, 'mensaje': '%d casamiento(s) aceptado(s): la app aprende de ellos' % n})
                     elif accion == 'quitar_oferta':
                         o.quitar_oferta(datos['huella'])
