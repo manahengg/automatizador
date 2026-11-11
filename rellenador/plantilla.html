@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rellenar precios</title>
+<style>
+:root{--fondo:#f5f6f8;--caja:#fff;--txt:#1d2430;--suave:#5b6574;--borde:#d9dde3;--azul:#1f4e78;--verde:#2e7d32;--verde2:#e6f4e7;
+--amar:#8a6100;--amar2:#fff4cc;--rojo:#b3261e;--rojo2:#fde7e6;--gris2:#eef0f3}
+*{box-sizing:border-box}body{margin:0;background:var(--fondo);color:var(--txt);font:14px/1.45 "Segoe UI",Arial,sans-serif}
+header{background:var(--azul);color:#fff;padding:14px 22px}header h1{margin:0;font-size:19px}header p{margin:2px 0 0;opacity:.85;font-size:13px}
+main{max-width:1500px;margin:0 auto;padding:16px}
+.pasos{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.caja{background:var(--caja);border:1px solid var(--borde);border-radius:8px;padding:14px 16px;margin-bottom:14px}
+.zona{border:2px dashed #9fb3c8;border-radius:8px;padding:22px;text-align:center;cursor:pointer;background:#fafcff;transition:.15s}
+.zona:hover,.zona.sobre{background:#eaf2fb;border-color:var(--azul)}.zona b{display:block;font-size:15px;margin-bottom:4px}
+.zona .peq{color:var(--suave)}.zona.ok{border-style:solid;border-color:var(--verde);background:var(--verde2)}
+.peq{font-size:12px;color:var(--suave)}
+button{font:inherit;padding:7px 14px;border-radius:6px;border:1px solid var(--borde);background:#fff;cursor:pointer}
+button.prim{background:var(--azul);color:#fff;border-color:var(--azul);font-weight:600}button:disabled{opacity:.5;cursor:default}
+.fila{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.resumen span{display:inline-block;margin-right:16px}.resumen b{font-size:16px}
+.barra{height:6px;background:var(--gris2);border-radius:3px;overflow:hidden;margin-top:6px}.barra div{height:100%;background:var(--azul);width:0}
+table{border-collapse:collapse;width:100%;font-size:13px}th{background:var(--azul);color:#fff;text-align:left;padding:6px 7px;position:sticky;top:0;z-index:1}
+td{border-bottom:1px solid var(--borde);padding:5px 7px;vertical-align:top}td.num{text-align:right;white-space:nowrap}
+tr.alta td{background:#fff}tr.media td,tr.baja td,tr.revisar td{background:var(--amar2)}tr.nada td{background:var(--rojo2)}tr.sinprecio td{background:var(--gris2)}
+.estado{font-size:12px;font-weight:600;white-space:nowrap}.e-alta{color:var(--verde)}.e-media,.e-baja,.e-revisar{color:var(--amar)}.e-nada{color:var(--rojo)}.e-sinprecio{color:var(--suave)}
+select{max-width:430px;font:inherit;font-size:12px;padding:3px}input.precio{width:105px;text-align:right;font:inherit;padding:3px 5px;border:1px solid var(--borde);border-radius:4px}
+input.precio.cambiado{border-color:var(--azul);background:#eef5ff}
+.tabla{max-height:62vh;overflow:auto;border:1px solid var(--borde);border-radius:6px}
+.oculto{display:none}.aviso{padding:9px 12px;border-radius:6px;background:var(--amar2);color:#5a4100;margin:8px 0}.error{background:var(--rojo2);color:var(--rojo)}
+</style>
+</head>
+<body>
+<header><h1>Rellenar precios de oferta en el Excel del ERP</h1>
+<p>Arrastra la petición de oferta del ERP y el PDF del proveedor: se rellena SOLO la columna de precios, sin tocar nada más del Excel. Todo se hace en este ordenador; ningún fichero sale de él.</p></header>
+<main>
+<div class="pasos">
+ <div class="caja"><div id="zExcel" class="zona"><b>1 · Excel del ERP (petición de oferta)</b><span class="peq">Arrastra aquí el .xlsx o haz clic para elegirlo</span></div>
+  <input type="file" id="fExcel" accept=".xlsx,.xlsm" class="oculto"><div id="infoExcel" class="peq" style="margin-top:8px"></div></div>
+ <div class="caja"><div id="zPdf" class="zona"><b>2 · Presupuesto del proveedor (PDF)</b><span class="peq">Uno o varios PDF del mismo proveedor (también escaneados)</span></div>
+  <input type="file" id="fPdf" accept=".pdf" multiple class="oculto"><div id="infoPdf" class="peq" style="margin-top:8px"></div></div>
+</div>
+<div id="progreso" class="caja oculto"><div id="progTexto">Leyendo…</div><div class="barra"><div id="progBarra"></div></div></div>
+<div id="resultado" class="caja oculto">
+ <div class="fila" style="justify-content:space-between"><div class="resumen" id="resumen"></div>
+  <div class="fila"><label class="peq"><input type="checkbox" id="soloRev"> solo lo que hay que mirar</label>
+  <button class="prim" id="bDescargar">⬇ Descargar Excel con precios</button></div></div>
+ <div id="avisos"></div>
+ <p class="peq">Verde = seguro · amarillo = revisa la línea elegida · rojo = no encontrada en el PDF (puedes elegirla o escribir el precio) · gris = el proveedor la incluye sin precio.
+ El precio es el <b>neto por unidad</b> (con su descuento) = importe ÷ cantidad del PDF. Puedes cambiar la línea del PDF o escribir otro precio en cualquier fila.</p>
+ <div class="tabla"><table><thead><tr><th>Fila</th><th>Código</th><th>Descripción (Excel)</th><th>Ud</th><th>Cant.</th><th>Línea del presupuesto del proveedor</th><th>Cant. PDF</th><th>Precio ud</th><th>Estado</th></tr></thead><tbody id="tbody"></tbody></table></div>
+</div>
+</main>
+<script>/*PDFJS*/</script>
+<script>/*JSZIP*/</script>
+<script>/*NUCLEO*/</script>
+<script id="workerPdf" type="text/plain">/*PDFWORKER*/</script>
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([$('#workerPdf').textContent], {type: 'text/javascript'}));
+const ESTADO = {excel: null, zip: null, nombre: '', arts: [], filas: [], em: [], pdfs: [], escaneado: false, totalPdf: 0};
+const eur = v => v == null || v === '' || isNaN(v) ? '' : (+v).toLocaleString('es-ES', {minimumFractionDigits: 2, maximumFractionDigits: 4}) + ' €';
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+
+function zona(idZona, idInput, alSoltar) {
+  const z = $(idZona), inp = $(idInput);
+  z.onclick = () => inp.click();
+  inp.onchange = () => inp.files.length && alSoltar([...inp.files]);
+  z.ondragover = e => { e.preventDefault(); z.classList.add('sobre'); };
+  z.ondragleave = () => z.classList.remove('sobre');
+  z.ondrop = e => { e.preventDefault(); z.classList.remove('sobre'); if (e.dataTransfer.files.length) alSoltar([...e.dataTransfer.files]); };
+}
+function progreso(texto, frac) { $('#progreso').classList.remove('oculto'); $('#progTexto').textContent = texto;
+  if (frac != null) $('#progBarra').style.width = Math.round(frac * 100) + '%'; }
+function fin() { $('#progreso').classList.add('oculto'); }
+function error(e) { fin(); $('#avisos').innerHTML = ''; alert(e.message || e); console.error(e); }
+
+zona('#zExcel', '#fExcel', async fs => {
+  try {
+    const f = fs[0]; ESTADO.nombre = f.name;
+    ESTADO.zip = await JSZip.loadAsync(await f.arrayBuffer());
+    ESTADO.excel = await Rellenador.leerExcel(ESTADO.zip);
+    $('#zExcel').classList.add('ok');
+    $('#infoExcel').innerHTML = `✔ <b>${esc(f.name)}</b> · ${ESTADO.excel.filas.length} partidas · se rellenará la columna <b>${ESTADO.excel.cab.precio}</b>
+      (cabecera en la fila ${ESTADO.excel.cab.fila})`;
+    if (ESTADO.arts.length) emparejar();
+  } catch (e) { error(e); }
+});
+zona('#zPdf', '#fPdf', async fs => {
+  try {
+    ESTADO.pdfs = fs; ESTADO.arts = []; ESTADO.escaneado = false;
+    const items = []; let pagBase = 0, conOcr = 0;
+    for (const [n, f] of fs.entries()) {
+      const doc = await pdfjsLib.getDocument({data: new Uint8Array(await f.arrayBuffer())}).promise;
+      for (let p = 1; p <= doc.numPages; p++) {
+        progreso(`Leyendo ${f.name}: página ${p} de ${doc.numPages}`, (n + p / doc.numPages) / fs.length);
+        const pg = await doc.getPage(p), vp = pg.getViewport({scale: 1}), tc = await pg.getTextContent();
+        if (tc.items.some(i => i.str.trim())) {
+          for (const it of tc.items) { const [a, b, c, d, e, g] = it.transform;
+            items.push({str: it.str, x: e, y: vp.height - g, w: it.width, h: Math.hypot(c, d) || it.height || 8, pagina: pagBase + p}); }
+        } else {                                       // página escaneada: OCR
+          conOcr++; ESTADO.escaneado = true;
+          for (const w of await ocrPagina(pg, `${f.name}: OCR de la página ${p} de ${doc.numPages}`)) items.push(Object.assign(w, {pagina: pagBase + p}));
+        }
+      }
+      pagBase += doc.numPages;
+    }
+    ESTADO.arts = Rellenador.articulos(Rellenador.lineas(items), ESTADO.escaneado);
+    ESTADO.totalPdf = ESTADO.arts.reduce((s, a) => s + (a.importe || 0), 0);
+    $('#zPdf').classList.add('ok');
+    $('#infoPdf').innerHTML = `✔ <b>${fs.map(f => esc(f.name)).join(', ')}</b> · ${ESTADO.arts.filter(a => !a.sinPrecio).length} líneas con precio`
+      + (ESTADO.arts.some(a => a.sinPrecio) ? ` y ${ESTADO.arts.filter(a => a.sinPrecio).length} sin precio` : '')
+      + ` · suma de importes ${eur(ESTADO.totalPdf)}` + (conOcr ? ` · ${conOcr} página(s) escaneada(s) leídas con OCR` : '');
+    fin();
+    if (!ESTADO.arts.length) alert('No he encontrado líneas de artículos (cantidad × precio = importe) en el PDF.');
+    if (ESTADO.excel) emparejar();
+  } catch (e) { error(e); }
+});
+
+let OCR = null;
+async function ocrPagina(pg, texto) {
+  if (!OCR) {
+    progreso('Preparando el OCR para PDF escaneados (la primera vez se descarga, necesita internet)…', null);
+    if (!window.Tesseract) await new Promise((ok, mal) => { const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js'; s.onload = ok;
+      s.onerror = () => mal(new Error('No se pudo cargar el OCR (hace falta internet para los PDF escaneados).')); document.head.appendChild(s); });
+    OCR = await Tesseract.createWorker('spa', 1, {logger: m => m.status === 'recognizing text' && progreso(texto + ' ' + Math.round(m.progress * 100) + ' %', null)});
+    await OCR.setParameters({preserve_interword_spaces: '1'});
+  }
+  progreso(texto, null);
+  const esc = 300 / 72, vp = pg.getViewport({scale: esc});
+  const lienzo = document.createElement('canvas'); lienzo.width = vp.width; lienzo.height = vp.height;
+  await pg.render({canvasContext: lienzo.getContext('2d'), viewport: vp}).promise;
+  const {data} = await OCR.recognize(lienzo);
+  return data.words.map(w => ({str: w.text, x: w.bbox.x0, y: (w.bbox.y0 + w.bbox.y1) / 2, w: w.bbox.x1 - w.bbox.x0, h: w.bbox.y1 - w.bbox.y0}));
+}
+
+function emparejar() {
+  ESTADO.filas = ESTADO.excel.filas;
+  ESTADO.em = Rellenador.emparejar(ESTADO.filas, ESTADO.arts);
+  pintar();
+}
+function estadoFila(i) {
+  const e = ESTADO.em[i], f = ESTADO.filas[i], inp = document.querySelector(`input[data-i="${i}"]`);
+  const manual = inp && inp.classList.contains('cambiado');
+  if (manual) return ['alta', '✔ a mano'];
+  if (!e) return ['nada', '✖ no está en el PDF'];
+  const a = ESTADO.arts[e.art];
+  if (a.sinPrecio) return ['sinprecio', '— ofertada sin precio'];
+  if (a.revisar) return ['revisar', '⚠ ' + (a.revisar.includes('coma') ? 'precio deducido del escaneo' : 'lectura dudosa')];
+  if (e.nota) return ['revisar', '⚠ pasado a €/m'];
+  if (a.cantidad !== f.cantidad) return ['media', '⚠ cantidad distinta'];
+  if (e.seguridad === 'alta') return ['alta', '✔ seguro'];
+  return [e.seguridad, '⚠ revisar'];
+}
+function opciones(sel) {
+  return '<option value="">— ninguna (sin precio) —</option>' + ESTADO.arts.map((a, j) =>
+    `<option value="${j}" ${j === sel ? 'selected' : ''}>${a.n} · ${esc(a.descripcion.slice(0, 70))} · ${a.cantidad ?? ''} · ${a.sinPrecio ? 'sin precio' : eur(a.precio)}</option>`).join('');
+}
+function descPdf(a, nota) {
+  return `<span title="${esc(a.descripcion)}">${esc(a.descripcion.slice(0, 110))}</span>${a.dto ? ` · lista ${eur(a.precioLista)} −${a.dto} %` : ''}`
+    + (nota ? `<div style="color:#8a6100">⚠ ${esc(nota)}</div>` : '') + (a.revisar ? `<div style="color:#8a6100">⚠ ${esc(a.revisar)}</div>` : '');
+}
+function pintar() {
+  const tb = $('#tbody'); let h = '';
+  ESTADO.filas.forEach((f, i) => {
+    const e = ESTADO.em[i], a = e ? ESTADO.arts[e.art] : null;
+    const precio = a && !a.sinPrecio ? (e.precio ?? a.precio) : '';
+    h += `<tr data-i="${i}"><td>${f.fila}</td><td class="peq">${esc(f.codigo)}</td><td title="${esc(f.descripcion)}">${esc(f.titulo)}</td><td>${esc(f.ud)}</td>
+      <td class="num">${f.cantidad}</td><td><select data-i="${i}">${opciones(e ? e.art : -1)}</select>
+      <div class="peq descpdf">${a ? descPdf(a, e.nota) : ''}</div></td>
+      <td class="num">${a ? (a.cantidad ?? '') : ''}</td><td class="num"><input class="precio" data-i="${i}" value="${precio === '' ? '' : String(precio).replace('.', ',')}"></td>
+      <td class="estado"></td></tr>`;
+  });
+  tb.innerHTML = h;
+  tb.querySelectorAll('select').forEach(s => s.onchange = () => {
+    const i = +s.dataset.i, j = s.value === '' ? null : +s.value;
+    const a = j === null ? null : ESTADO.arts[j];
+    ESTADO.em[i] = j === null ? null : Object.assign(Rellenador.parecido(ESTADO.filas[i], a), Rellenador.precioPara(ESTADO.filas[i], a),
+                                                     {art: j, seguridad: 'alta', como: 'a mano'});
+    const inp = document.querySelector(`input[data-i="${i}"]`);
+    inp.value = a && !a.sinPrecio ? String(ESTADO.em[i].precio ?? a.precio).replace('.', ',') : ''; inp.classList.remove('cambiado');
+    const fila = s.closest('tr');
+    fila.querySelector('.descpdf').innerHTML = a ? descPdf(a, ESTADO.em[i].nota) : '';
+    fila.children[6].textContent = a ? (a.cantidad ?? '') : '';
+    actualizar();
+  });
+  tb.querySelectorAll('input.precio').forEach(inp => inp.oninput = () => { inp.classList.add('cambiado'); actualizar(); });
+  $('#resultado').classList.remove('oculto');
+  actualizar();
+}
+function precioDe(i) {
+  const v = document.querySelector(`input[data-i="${i}"]`).value.trim().replace(/\s|€/g, '');
+  if (!v) return null;
+  const n = Rellenador.numero(v.includes(',') ? v : v.replace('.', ','));
+  return n === null ? NaN : n;
+}
+function actualizar() {
+  let c = {alta: 0, rev: 0, nada: 0, sin: 0}, suma = 0, malos = 0;
+  ESTADO.filas.forEach((f, i) => {
+    const [cl, txt] = estadoFila(i), tr = document.querySelector(`tr[data-i="${i}"]`);
+    tr.className = cl; tr.querySelector('.estado').innerHTML = `<span class="e-${cl}">${txt}</span>`;
+    if (cl === 'alta') c.alta++; else if (cl === 'nada') c.nada++; else if (cl === 'sinprecio') c.sin++; else c.rev++;
+    const p = precioDe(i); if (p !== null && !isNaN(p)) suma += p * f.cantidad; if (isNaN(p)) malos++;
+    tr.style.display = $('#soloRev').checked && cl === 'alta' ? 'none' : '';
+  });
+  $('#resumen').innerHTML = `<span><b>${ESTADO.filas.length}</b> partidas</span><span class="e-alta"><b>${c.alta}</b> con precio seguro</span>
+    <span class="e-revisar"><b>${c.rev}</b> a revisar</span><span class="e-sinprecio"><b>${c.sin}</b> ofertadas sin precio</span>
+    <span class="e-nada"><b>${c.nada}</b> no están en el PDF</span><span>Precio × cantidad: <b>${eur(Math.round(suma * 100) / 100)}</b>
+    <span class="peq">(suma de importes del PDF: ${eur(ESTADO.totalPdf)})</span></span>`;
+  $('#bDescargar').disabled = malos > 0;
+  $('#avisos').innerHTML = malos ? `<div class="aviso error">Hay ${malos} precio(s) escritos que no son un número.</div>` : '';
+}
+$('#soloRev').onchange = actualizar;
+$('#bDescargar').onclick = async () => {
+  try {
+    const precios = {};
+    ESTADO.filas.forEach((f, i) => { const p = precioDe(i); if (p !== null && !isNaN(p)) precios[f.fila] = p;
+      else if (f.precioActual != null) precios[f.fila] = null; });
+    const ex = ESTADO.excel, r = Rellenador.escribirPrecios(ex.xml, ex.cab.precio, precios);
+    ESTADO.zip.file(ex.hoja, r.xml, {createFolders: false});
+    const blob = await ESTADO.zip.generateAsync({type: 'blob', compression: 'DEFLATE',
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = ESTADO.nombre.replace(/\.xls[xm]$/i, '') + '_precios.xlsx'; document.body.appendChild(a); a.click(); a.remove();
+  } catch (e) { error(e); }
+};
+</script>
+</body>
+</html>
