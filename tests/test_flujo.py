@@ -175,6 +175,30 @@ def main():
     comprobar(d['reparto']['filas'] and all(x['proveedor'] != 'Junta Extremadura' for x in d['reparto']['filas']),
               'reparto entre distribuidores: %s' % ', '.join('%s %.2f' % (x['proveedor'], x['importe'])
                                                               for x in d['reparto']['filas']))
+    # 10) pedidos: al más barato en total (toda su oferta) y uno por distribuidor con sus materiales más baratos
+    ganador = next(x for x in d['totales_prov'] if x['ganador'])
+    comprobar(all(x['proveedor'] != 'Junta Extremadura' for x in d['totales_prov']), 'la Junta no recibe pedidos')
+    from urllib.parse import quote
+    nom, xlsx = nombre_descarga(O + '/pedido?modo=total&prov=' + quote(ganador['proveedor']))
+    comprobar('.Pedido_' in nom and xlsx[:2] == b'PK', 'pedido completo al más barato en total (%s): %s'
+              % (ganador['proveedor'], nom))
+    import io
+    import zipfile
+    nom, zdatos = nombre_descarga(O + '/pedidos_reparto')
+    z = zipfile.ZipFile(io.BytesIO(zdatos))
+    con_materiales = [x for x in d['reparto']['filas'] if x['materiales']]
+    comprobar(len(z.namelist()) == len(con_materiales), 'un pedido por distribuidor del reparto: %s' % z.namelist())
+    total_zip = 0.0
+    from automatizador.exportadores import excel_pedido as XP
+    for n in z.namelist():
+        wb = openpyxl.load_workbook(io.BytesIO(z.read(n)))
+        ws = wb.active
+        for r in range(XP.F_CABECERA + 1, ws.max_row + 1):
+            c, p_ = ws.cell(r, XP.C_CANT).value, ws.cell(r, XP.C_PRECIO).value
+            if isinstance(c, (int, float)) and isinstance(p_, (int, float)) and ws.cell(r, 1).value:
+                total_zip += c * p_
+    comprobar(abs(total_zip - d['reparto']['total']) < 1.0, 'los pedidos del reparto suman lo mismo que el reparto '
+                                                             '(%.2f / %.2f)' % (total_zip, d['reparto']['total']))
     nom, xlsx = nombre_descarga(O + '/desglose/' + j['docs'][0]['huella'])
     comprobar('Desglose' in nom and xlsx[:2] == b'PK', 'desglose de la base de precios: %s' % nom)
     print('TODO CORRECTO')

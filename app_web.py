@@ -31,7 +31,7 @@ from . import emparejar as M
 from .app_html import PAGINA
 from .bbdd import BBDD
 from .obra import Obra, clave_mat, leer_cliente, ruta_bbdd
-from .exportadores import excel_comparativa, excel_peticion
+from .exportadores import excel_comparativa, excel_peticion, excel_pedido
 
 MAX_SUBIDA = 300 * 1024 * 1024
 BLOQUEO = threading.RLock()        # una operación pesada cada vez (OCR, análisis, escritura)
@@ -188,7 +188,7 @@ def datos_obra(o):
     filas_rep, total_rep, sin_rep = r.reparto()
     for pv in provs:
         totales[pv['nombre']]['referencia'] = bool(pv.get('referencia'))
-    base.update(reparto={'filas': filas_rep, 'total': total_rep, 'sin': sin_rep})
+    base.update(reparto={'filas': filas_rep, 'total': total_rep, 'sin': sin_rep}, totales_prov=r.totales_proveedores())
     base.update(materiales=mats, lineas=lineas, total_cliente=total_cli, totales=totales,
                 cliente_nombre=r.cliente.nombre, avisos_cliente=[a.texto for a in r.cliente.avisos if a.nivel != 'info'])
     return base
@@ -409,6 +409,14 @@ def servir(puerto=8765, abrir=True):
             m = re.fullmatch(r'/api/obra/([^/]+)/excel', ruta)
             if m:
                 return self._proteger(lambda: self._excel(Obra.abrir(m.group(1))))
+            m = re.fullmatch(r'/api/obra/([^/]+)/pedido', ruta)
+            if m:
+                prov = (q.get('prov') or [''])[0]
+                modo = (q.get('modo') or ['total'])[0]
+                return self._proteger(lambda: self._pedido(Obra.abrir(m.group(1)), prov, modo))
+            m = re.fullmatch(r'/api/obra/([^/]+)/pedidos_reparto', ruta)
+            if m:
+                return self._proteger(lambda: self._pedidos_reparto(Obra.abrir(m.group(1))))
             m = re.fullmatch(r'/api/obra/([^/]+)/peticion', ruta)
             if m:
                 caps = [c for c in (q.get('caps') or [''])[0].split('|') if c] or None
@@ -499,6 +507,44 @@ def servir(puerto=8765, abrir=True):
                 mats, ruta, obra=d.get('descripcion') or o.nombre, cod_obra=d.get('cod') or '',
                 capitulos_txt='; '.join(titulos)[:400]))
             self._descargar(datos, o.nombre_excel('Peticion_oferta'))
+
+        def _pedido(self, o, prov, modo):
+            """modo 'total': todo lo que oferta el proveedor; 'reparto': solo los materiales en los que es el más barato."""
+            with BLOQUEO:
+                r = analisis(o)
+            if not any(pv['nombre'] == prov for pv in r.distribuidores):
+                raise ValueError('"%s" no es un distribuidor de esta obra.' % prov)
+            if modo == 'reparto':
+                ids = set(r.adjudicacion()[prov])
+                if not ids:
+                    raise ValueError('%s no es el más barato en ningún material.' % prov)
+                motivo = 'Pedido de los materiales en los que su oferta es la más económica.'
+                tipo = 'Pedido_%s' % prov
+            else:
+                ids, motivo, tipo = None, 'Pedido según su oferta completa.', 'Pedido_%s' % prov
+            datos = self._generar(lambda ruta: excel_pedido.escribir(r, prov, ruta, ids, o.estado.get('datos') or {}, motivo))
+            self._descargar(datos, o.nombre_excel(tipo))
+
+        def _pedidos_reparto(self, o):
+            """ZIP con un pedido por distribuidor con sus materiales más baratos."""
+            import io
+            import zipfile
+            with BLOQUEO:
+                r = analisis(o)
+            adj = r.adjudicacion()
+            b = io.BytesIO()
+            with zipfile.ZipFile(b, 'w', zipfile.ZIP_DEFLATED) as z:
+                for prov, ids in adj.items():
+                    if ids:
+                        z.writestr(o.nombre_excel('Pedido_%s' % prov), self._generar(lambda ruta: excel_pedido.escribir(
+                            r, prov, ruta, set(ids), o.estado.get('datos') or {},
+                            'Pedido de los materiales en los que su oferta es la más económica.')))
+            if not any(adj.values()):
+                raise ValueError('No hay ofertas de distribuidores con precio.')
+            from urllib.parse import quote
+            nombre = o.nombre_excel('Pedidos_reparto')[:-5] + '.zip'
+            self._enviar(200, b.getvalue(), 'application/zip',
+                         {'Content-Disposition': "attachment; filename=\"pedidos.zip\"; filename*=UTF-8''%s" % quote(nombre)})
 
         def _desglose(self, o, huella_doc):
             of = next((x for x in o.estado['ofertas'] if x['huella'].startswith(huella_doc)), None)

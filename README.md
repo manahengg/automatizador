@@ -39,6 +39,11 @@ PDF escaneado o Excel) —al principio o en cualquier momento— y la app:
   de obra / materiales / maquinaria / %, los materiales con su precio y las incoherencias de la propia base.
 - **Reparto entre distribuidores**: comprando cada material al más barato, cuánto se le adjudica a cada distribuidor
   (en la pantalla y en la hoja Resumen del Excel).
+- **Pedidos** (caja "📦 Pedidos" en la comparativa): 1) pedido de **toda su oferta** al distribuidor con el total más
+  bajo entre los que ofertan más materiales (aunque alguna partida la tenga más cara; se puede pedir a cualquiera); 2)
+  **un pedido por distribuidor** con los materiales en los que es el más barato (ZIP, o uno a uno desde el reparto). Cada
+  línea lleva la referencia, descripción y precio neto de su oferta; la cantidad es editable y al lado va lo que
+  necesita el proyecto.
 - **Halógenos**: antes de avisar se deduce si lo ofertado lleva halógenos (designación Z1 = libre, V = PVC; AS/LSZH/LH;
   CPR a1; marcas; PVC en tubos). Solo hay alerta grave si se confirma que los lleva.
 

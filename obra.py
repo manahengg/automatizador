@@ -522,6 +522,35 @@ class Resultado:
                     o.alertas.append(('baja', 'Precio de referencia %.2f €: el mejor distribuidor (%s, %.2f €) está un '
                                               '%.0f%% por encima.' % (o.precio, nom, mejor, (mejor / o.precio - 1) * 100)))
 
+    def adjudicacion(self):
+        """{distribuidor: [material_id...]}: cada material al distribuidor con el unitario más bajo (empate: el primero)."""
+        out = {pv['nombre']: [] for pv in self.distribuidores}
+        for m in self.materiales:
+            mejores = [(pv['ofertas'][m.id].precio, k, pv['nombre']) for k, pv in enumerate(self.distribuidores)
+                       if m.id in pv['ofertas'] and pv['ofertas'][m.id].precio]
+            if mejores:
+                out[min(mejores)[2]].append(m.id)
+        return out
+
+    def totales_proveedores(self):
+        """Total de cada distribuidor comprándole TODO lo que oferta (con las cantidades del proyecto, para comparar
+        igual a todos). El 'más barato en total' es el de menor total entre los que ofertan más materiales: si no, uno que
+        oferta la mitad de las partidas parecería siempre el más barato.
+        -> [{proveedor, total, materiales, total_documento, ganador}] ordenado por total"""
+        filas = []
+        for pv in self.distribuidores:
+            con = [o for o in pv['ofertas'].values() if o.precio is not None]
+            filas.append({'proveedor': pv['nombre'], 'materiales': len(con),
+                          'total': round(sum(o.importe or 0 for o in con), 2),
+                          'total_documento': round(sum(d['doc'].total_declarado or 0 for d in pv['docs']), 2) or None,
+                          'ganador': False})
+        if filas:
+            maximo = max(f['materiales'] for f in filas)
+            completos = [f for f in filas if f['materiales'] == maximo and f['total'] > 0]
+            if completos:
+                min(completos, key=lambda f: f['total'])['ganador'] = True
+        return sorted(filas, key=lambda f: (not f['ganador'], f['total']))
+
     def reparto(self):
         """Comprando cada material al distribuidor más barato: cuánto se le adjudica a cada uno.
         -> (filas [{proveedor, materiales, importe, pct, total_propio, ofertados}], total, sin_oferta)"""
@@ -529,17 +558,14 @@ class Resultado:
                               'ofertados': sum(1 for o in pv['ofertas'].values() if o.precio is not None),
                               'total_propio': round(sum(o.importe or 0 for o in pv['ofertas'].values()), 2)}
                for pv in self.distribuidores}
-        sin = 0
-        for m in self.materiales:
-            mejores = [(pv['ofertas'][m.id].precio, k, pv['nombre']) for k, pv in enumerate(self.distribuidores)
-                       if m.id in pv['ofertas'] and pv['ofertas'][m.id].precio]
-            if not mejores:
-                sin += 1
-                continue
-            precio, _, nom = min(mejores)
-            o = next(pv for pv in self.distribuidores if pv['nombre'] == nom)['ofertas'][m.id]
-            por[nom]['materiales'] += 1
-            por[nom]['importe'] += o.importe if o.importe is not None else precio * (m.cantidad or 0)
+        adj = self.adjudicacion()
+        mats = {m.id: m for m in self.materiales}
+        for pv in self.distribuidores:
+            for mid in adj[pv['nombre']]:
+                o = pv['ofertas'][mid]
+                por[pv['nombre']]['materiales'] += 1
+                por[pv['nombre']]['importe'] += o.importe if o.importe is not None else o.precio * (mats[mid].cantidad or 0)
+        sin = len(self.materiales) - sum(len(v) for v in adj.values())
         total = round(sum(x['importe'] for x in por.values()), 2)
         filas = sorted(por.values(), key=lambda x: -x['importe'])
         for x in filas:
